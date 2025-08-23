@@ -36,6 +36,11 @@ lower_bound = None
 _bounds_candle_ts = None
 _triggered_window_id = None  # prevents duplicate alerts within one window
 
+#Controllers
+EntryCount = 0
+LastSide = None
+status = None
+
 # ==========================
 # Utilities
 # ==========================
@@ -80,13 +85,25 @@ def fetch_initial_candles():
         live_price = float(candles["Close"].iloc[-1])
         last_valid_price = live_price if is_valid_price(live_price) else None
 
-def send_webhook(message: str, trigger_time_iso: str, entry_price: float, side: str):
+def get_status(EntryCount: int) -> str:
+    # Pattern: 1-entry, 2-exit, 3-exit, repeat
+    cycle = ["entry", "exit", "exit"]
+    return cycle[(EntryCount - 1) % 3]
+
+def send_webhook(trigger_time_iso: str, entry_price: float, side: str):
+    global EntryCount, LastSide, status
+    secret = "gajraj09"
+    quantity = 1.8
+    status = get_status(EntryCount)
+    
     try:
         payload = {
-            "symbol": SYMBOL.upper(),
-            "alert": message,
+            "symbol": "XRPUSDC",
             "side": side,
-            "entry_price": entry_price,
+            "quantity": quantity,
+            "price": entry_price,
+            "status": status,
+            "secret": secret
         }
         requests.post(WEBHOOK_URL, json=payload, timeout=5)
     except Exception as e:
@@ -115,26 +132,47 @@ def recompute_bounds_on_close():
 
 def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
     """Trigger if trade price crosses bounds (one signal per window)."""
-    global alerts, _triggered_window_id
+    global alerts, _triggered_window_id, status, EntryCount, LastSide
     if not (is_valid_price(trade_price) and upper_bound is not None and lower_bound is not None and _bounds_candle_ts):
         return
     if _triggered_window_id == _bounds_candle_ts:
         return
 
-    trigger_time = datetime.fromtimestamp(trade_ts_ms / 1000, tz=timezone.utc)
+    trigger_time = datetime.fromtimestamp(trade_ts_ms / 1000, tz=timezone(timedelta(hours=5, minutes=30)))
     trigger_time_iso = trigger_time.isoformat().replace("+00:00", "Z")
 
     if trade_price >= upper_bound:
+        side = "buy"
+        if EntryCount == 0 and LastSide != side:
+            EntryCount += 1
+            LastSide = side
+        elif EntryCount != 0 and LastSide == side:
+            EntryCount += 1
+            LastSide = side
+        elif EntryCount != 0 and LastSide != side:
+            EntryCount = 1
+            LastSide = side
         entry = upper_bound
-        msg = f"LONG breakout | Entry {fmt_price(entry)} | Live {fmt_price(trade_price)} | Trigger {trigger_time_iso}"
+        send_webhook(trigger_time_iso, entry, side)
+        msg = f"LONG breakout Buy | {status}: {fmt_price(entry)} | Live {fmt_price(trade_price)} | Trigger {trigger_time_iso}"
         alerts.append(msg); alerts[:] = alerts[-50:]
-        send_webhook(msg, trigger_time_iso, entry, "LONG")
         _triggered_window_id = _bounds_candle_ts
     elif trade_price <= lower_bound:
+        side = "sell"
+        if EntryCount == 0 and LastSide != side:
+            EntryCount += 1
+            LastSide = side
+        elif EntryCount != 0 and LastSide == side:
+            EntryCount += 1
+            LastSide = side
+        elif EntryCount != 0 and LastSide != side:
+            EntryCount = 1
+            LastSide = side
         entry = lower_bound
-        msg = f"SHORT breakout | Entry {fmt_price(entry)} | Live {fmt_price(trade_price)} | Trigger {trigger_time_iso}"
+        # FIXED: call signature and order (was 4 args, wrong order)
+        send_webhook(trigger_time_iso, entry, side)
+        msg = f"SHORT breakout Sell | {status}: {fmt_price(entry)} | Live {fmt_price(trade_price)} | Trigger {trigger_time_iso}"
         alerts.append(msg); alerts[:] = alerts[-50:]
-        send_webhook(msg, trigger_time_iso, entry, "SHORT")
         _triggered_window_id = _bounds_candle_ts
 
 # ==========================
