@@ -140,6 +140,72 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
 # ==========================
 # WebSocket
 # ==========================
+# def on_message(ws, message):
+#     global candles, live_price, last_valid_price
+#     try:
+#         data = json.loads(message)
+#         stream = data.get("stream")
+#         payload = data.get("data")
+
+#         # Kline updates (candle forming + close)
+#         if stream and "kline" in stream:
+#             kline = payload["k"]
+#             ts_dt = datetime.fromtimestamp(kline["t"] / 1000, tz=timezone.utc)
+#             o, h, l, c = float(kline["o"]), float(kline["h"]), float(kline["l"]), float(kline["c"])
+
+#             if is_valid_price(c):
+#                 last_valid_price = c
+#                 live_price = c
+
+#             if candles.empty or candles.iloc[-1]["time"] != ts_dt:
+#                 open_val = o if is_valid_price(o) else (last_valid_price if last_valid_price is not None else None)
+#                 if open_val is None:
+#                     return
+#                 high_val = h if is_valid_price(h) else open_val
+#                 low_val = l if is_valid_price(l) else open_val
+#                 close_val = c if is_valid_price(c) else open_val
+
+#                 new_row = {"time": ts_dt, "Open": open_val, "High": max(high_val, open_val),
+#                            "Low": min(low_val, open_val), "Close": close_val}
+#                 candles = pd.concat([candles, pd.DataFrame([new_row])], ignore_index=True)
+#             else:
+#                 idx = candles.index[-1]
+#                 if is_valid_price(h):
+#                     candles.at[idx, "High"] = max(candles.at[idx, "High"], h)
+#                 if is_valid_price(l):
+#                     candles.at[idx, "Low"] = min(candles.at[idx, "Low"], l)
+#                 if is_valid_price(c):
+#                     candles.at[idx, "Close"] = c
+#                     live_price = c
+#                     last_valid_price = c
+
+#             if len(candles) > CANDLE_LIMIT:
+#                 candles = candles.tail(CANDLE_LIMIT).reset_index(drop=True)
+
+#             if kline["x"]:
+#                 recompute_bounds_on_close()
+
+#         # Trade ticks: update live price and current candle close
+#         elif stream and "trade" in stream:
+#             trade_price_raw = payload.get("p")
+#             if not is_valid_price(trade_price_raw):
+#                 return
+#             trade_price = float(trade_price_raw)
+#             live_price = trade_price
+#             last_valid_price = trade_price
+
+#             if not candles.empty:
+#                 idx = candles.index[-1]
+#                 candles.at[idx, "Close"] = trade_price
+#                 candles.at[idx, "High"] = max(candles.at[idx, "High"], trade_price)
+#                 candles.at[idx, "Low"] = min(candles.at[idx, "Low"], trade_price)
+
+#             trade_ts_ms = int(payload.get("T") or payload.get("E") or time.time() * 1000)
+#             try_trigger_on_trade(trade_price, trade_ts_ms)
+
+#     except Exception as e:
+#         print("on_message error:", e)
+
 def on_message(ws, message):
     global candles, live_price, last_valid_price
     try:
@@ -147,28 +213,37 @@ def on_message(ws, message):
         stream = data.get("stream")
         payload = data.get("data")
 
+        # ==========================
         # Kline updates (candle forming + close)
+        # ==========================
         if stream and "kline" in stream:
             kline = payload["k"]
             ts_dt = datetime.fromtimestamp(kline["t"] / 1000, tz=timezone.utc)
             o, h, l, c = float(kline["o"]), float(kline["h"]), float(kline["l"]), float(kline["c"])
 
+            # Update live price
             if is_valid_price(c):
                 last_valid_price = c
                 live_price = c
 
+            # Check if it's a new candle
             if candles.empty or candles.iloc[-1]["time"] != ts_dt:
-                open_val = o if is_valid_price(o) else (last_valid_price if last_valid_price is not None else None)
-                if open_val is None:
-                    return
+                # Ensure valid prices
+                open_val = o if is_valid_price(o) else last_valid_price
                 high_val = h if is_valid_price(h) else open_val
                 low_val = l if is_valid_price(l) else open_val
                 close_val = c if is_valid_price(c) else open_val
 
-                new_row = {"time": ts_dt, "Open": open_val, "High": max(high_val, open_val),
-                           "Low": min(low_val, open_val), "Close": close_val}
+                new_row = {
+                    "time": ts_dt,
+                    "Open": open_val,
+                    "High": max(high_val, open_val),
+                    "Low": min(low_val, open_val),
+                    "Close": close_val
+                }
                 candles = pd.concat([candles, pd.DataFrame([new_row])], ignore_index=True)
             else:
+                # Update current forming candle
                 idx = candles.index[-1]
                 if is_valid_price(h):
                     candles.at[idx, "High"] = max(candles.at[idx, "High"], h)
@@ -179,13 +254,17 @@ def on_message(ws, message):
                     live_price = c
                     last_valid_price = c
 
+            # Keep only last CANDLE_LIMIT candles
             if len(candles) > CANDLE_LIMIT:
                 candles = candles.tail(CANDLE_LIMIT).reset_index(drop=True)
 
+            # On candle close: recompute bounds
             if kline["x"]:
                 recompute_bounds_on_close()
 
-        # Trade ticks: update live price and current candle close
+        # ==========================
+        # Trade ticks: update live price and current candle
+        # ==========================
         elif stream and "trade" in stream:
             trade_price_raw = payload.get("p")
             if not is_valid_price(trade_price_raw):
@@ -205,6 +284,7 @@ def on_message(ws, message):
 
     except Exception as e:
         print("on_message error:", e)
+
 
 def on_error(ws, error):
     print("WebSocket error:", error)
