@@ -130,50 +130,90 @@ def recompute_bounds_on_close():
     _bounds_candle_ts = window["time"].iloc[-1]
     _triggered_window_id = None
 
+# def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
+#     """Trigger if trade price crosses bounds (one signal per window)."""
+#     global alerts, _triggered_window_id, status, EntryCount, LastSide
+#     if not (is_valid_price(trade_price) and upper_bound is not None and lower_bound is not None and _bounds_candle_ts):
+#         return
+#     if _triggered_window_id == _bounds_candle_ts:
+#         return
+
+#     trigger_time = datetime.fromtimestamp(trade_ts_ms / 1000, tz=timezone(timedelta(hours=5, minutes=30)))
+#     trigger_time_iso = trigger_time.isoformat().replace("+00:00", "Z")
+
+#     if trade_price >= upper_bound:
+#         side = "buy"
+#         if EntryCount == 0 and LastSide != side:
+#             EntryCount += 1
+#             LastSide = side
+#         elif EntryCount != 0 and LastSide == side:
+#             EntryCount += 1
+#             LastSide = side
+#         elif EntryCount != 0 and LastSide != side:
+#             EntryCount = 1
+#             LastSide = side
+#         entry = upper_bound
+#         send_webhook(trigger_time_iso, entry, side)
+#         msg = f"LONG breakout Buy | {status}: {fmt_price(entry)} | Live {fmt_price(trade_price)} | Trigger {trigger_time_iso}"
+#         alerts.append(msg); alerts[:] = alerts[-50:]
+#         _triggered_window_id = _bounds_candle_ts
+#     elif trade_price <= lower_bound:
+#         side = "sell"
+#         if EntryCount == 0 and LastSide != side:
+#             EntryCount += 1
+#             LastSide = side
+#         elif EntryCount != 0 and LastSide == side:
+#             EntryCount += 1
+#             LastSide = side
+#         elif EntryCount != 0 and LastSide != side:
+#             EntryCount = 1
+#             LastSide = side
+#         entry = lower_bound
+#         # FIXED: call signature and order (was 4 args, wrong order)
+#         send_webhook(trigger_time_iso, entry, side)
+#         msg = f"SHORT breakout Sell | {status}: {fmt_price(entry)} | Live {fmt_price(trade_price)} | Trigger {trigger_time_iso}"
+#         alerts.append(msg); alerts[:] = alerts[-50:]
+#         _triggered_window_id = _bounds_candle_ts
+
 def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
-    """Trigger if trade price crosses bounds (one signal per window)."""
     global alerts, _triggered_window_id, status, EntryCount, LastSide
-    if not (is_valid_price(trade_price) and upper_bound is not None and lower_bound is not None and _bounds_candle_ts):
+
+    if not is_valid_price(trade_price) or upper_bound is None or lower_bound is None:
         return
+
+    if _bounds_candle_ts is None or pd.isnull(_bounds_candle_ts):
+        return
+
     if _triggered_window_id == _bounds_candle_ts:
         return
 
     trigger_time = datetime.fromtimestamp(trade_ts_ms / 1000, tz=timezone(timedelta(hours=5, minutes=30)))
     trigger_time_iso = trigger_time.isoformat().replace("+00:00", "Z")
 
+    # Long breakout
     if trade_price >= upper_bound:
         side = "buy"
-        if EntryCount == 0 and LastSide != side:
-            EntryCount += 1
-            LastSide = side
-        elif EntryCount != 0 and LastSide == side:
-            EntryCount += 1
-            LastSide = side
-        elif EntryCount != 0 and LastSide != side:
-            EntryCount = 1
-            LastSide = side
+        EntryCount = EntryCount + 1 if LastSide == side else 1
+        LastSide = side
         entry = upper_bound
         send_webhook(trigger_time_iso, entry, side)
         msg = f"LONG breakout Buy | {status}: {fmt_price(entry)} | Live {fmt_price(trade_price)} | Trigger {trigger_time_iso}"
         alerts.append(msg); alerts[:] = alerts[-50:]
         _triggered_window_id = _bounds_candle_ts
+        print("🚀 Alert triggered (LONG)")
+
+    # Short breakout
     elif trade_price <= lower_bound:
         side = "sell"
-        if EntryCount == 0 and LastSide != side:
-            EntryCount += 1
-            LastSide = side
-        elif EntryCount != 0 and LastSide == side:
-            EntryCount += 1
-            LastSide = side
-        elif EntryCount != 0 and LastSide != side:
-            EntryCount = 1
-            LastSide = side
+        EntryCount = EntryCount + 1 if LastSide == side else 1
+        LastSide = side
         entry = lower_bound
-        # FIXED: call signature and order (was 4 args, wrong order)
         send_webhook(trigger_time_iso, entry, side)
         msg = f"SHORT breakout Sell | {status}: {fmt_price(entry)} | Live {fmt_price(trade_price)} | Trigger {trigger_time_iso}"
         alerts.append(msg); alerts[:] = alerts[-50:]
         _triggered_window_id = _bounds_candle_ts
+        print("🚀 Alert triggered (SHORT)")
+
 
 # ==========================
 # WebSocket
