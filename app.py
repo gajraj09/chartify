@@ -19,7 +19,7 @@ from flask import Flask, request, jsonify
 SYMBOL = "xrpusdc"  # Binance lowercase for WS
 INTERVAL = "5m"     # Binance interval
 CANDLE_LIMIT = 10   # Display last N candles
-WEBHOOK_URL = "http://localhost:5000/webhook"  # Replace with your webhook URL
+WEBHOOK_URL = "https://binance-65gz.onrender.com/webhook"  # Replace with your webhook URL
 LENGTH = 5          # last closed candles to form bounds
 PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
 
