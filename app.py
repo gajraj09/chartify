@@ -67,6 +67,7 @@ def fetch_initial_candles():
     r = requests.get(url, timeout=10)
     r.raise_for_status()
     data = r.json()
+
     rows = []
     for k in data:
         rows.append({
@@ -84,46 +85,48 @@ def fetch_initial_candles():
 def send_webhook(message: str, trigger_time_iso: str, entry_price: float, side: str):
     try:
         payload = {
-            "symbol": SYMBOL.upper(),
-            "interval": INTERVAL,
+            "symbol": "XRPUSDC",
             "alert": message,
             "side": side,
             "entry_price": entry_price,
-            "price": live_price,
-            "timestamp": trigger_time_iso,
-            "bounds": {
-                "upper": upper_bound,
-                "lower": lower_bound,
-                "window_candle_ts": _bounds_candle_ts.isoformat().replace("+00:00", "Z") if _bounds_candle_ts else None,
-                "length": LENGTH
-            }
         }
         requests.post(WEBHOOK_URL, json=payload, timeout=5)
     except Exception as e:
         print("Webhook error:", e)
 
 def recompute_bounds_on_close():
+    """Recompute bounds using last LENGTH CLOSED candles."""
     global upper_bound, lower_bound, _bounds_candle_ts, _triggered_window_id
     if len(candles) < LENGTH:
+        upper_bound = None
+        lower_bound = None
+        _bounds_candle_ts = None
+        _triggered_window_id = None
         return
+
     window = candles.tail(LENGTH)
+    # ensure bounds use valid prices only
     highs = window["High"][window["High"] > 0]
     lows = window["Low"][window["Low"] > 0]
     if highs.empty or lows.empty:
         return
+
     upper_bound = float(highs.max())
     lower_bound = float(lows.min())
     _bounds_candle_ts = window["time"].iloc[-1]
-    _triggered_window_id = None
+    _triggered_window_id = None  # reset guard for new window
 
 def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
+    """Trigger if trade price crosses bounds (one signal per window)."""
     global alerts, _triggered_window_id
     if not (is_valid_price(trade_price) and upper_bound is not None and lower_bound is not None and _bounds_candle_ts):
         return
     if _triggered_window_id == _bounds_candle_ts:
         return
+
     trigger_time = datetime.fromtimestamp(trade_ts_ms / 1000, tz=timezone.utc)
     trigger_time_iso = trigger_time.isoformat().replace("+00:00", "Z")
+
     if trade_price >= upper_bound:
         entry = upper_bound
         msg = f"LONG breakout | Entry {fmt_price(entry)} | Live {fmt_price(trade_price)} | Trigger {trigger_time_iso}"
@@ -146,24 +149,34 @@ def on_message(ws, message):
         data = json.loads(message)
         stream = data.get("stream")
         payload = data.get("data")
+
+        # Kline updates (candle forming + close)
         if stream and "kline" in stream:
             kline = payload["k"]
             ts_dt = datetime.fromtimestamp(kline["t"] / 1000, tz=timezone.utc)
             o, h, l, c = float(kline["o"]), float(kline["h"]), float(kline["l"]), float(kline["c"])
+
+            # Keep last_valid_price current if c is valid
             if is_valid_price(c):
                 last_valid_price = c
-                live_price = c
+                live_price = c  # latest kline 'c' is a good approximation between trades
+
+            # New candle row?
             if candles.empty or candles.iloc[-1]["time"] != ts_dt:
-                open_val = o if is_valid_price(o) else last_valid_price
+                # Seed with safe values to avoid zeros
+                open_val = o if is_valid_price(o) else (last_valid_price if last_valid_price is not None else None)
                 if open_val is None:
+                    # if we truly have no valid price, skip this kline update
                     return
                 high_val = h if is_valid_price(h) else open_val
                 low_val = l if is_valid_price(l) else open_val
                 close_val = c if is_valid_price(c) else open_val
+
                 new_row = {"time": ts_dt, "Open": open_val, "High": max(high_val, open_val),
                            "Low": min(low_val, open_val), "Close": close_val}
                 candles = pd.concat([candles, pd.DataFrame([new_row])], ignore_index=True)
             else:
+                # Update current forming candle safely (ignore zero/invalid)
                 idx = candles.index[-1]
                 if is_valid_price(h):
                     candles.at[idx, "High"] = max(candles.at[idx, "High"], h)
@@ -173,24 +186,33 @@ def on_message(ws, message):
                     candles.at[idx, "Close"] = c
                     live_price = c
                     last_valid_price = c
+
             if len(candles) > CANDLE_LIMIT:
                 candles = candles.tail(CANDLE_LIMIT).reset_index(drop=True)
+
+            # On candle close: recompute bounds
             if kline["x"]:
                 recompute_bounds_on_close()
+
+        # Trade ticks: update live price and current candle close (tick-by-tick)
         elif stream and "trade" in stream:
             trade_price_raw = payload.get("p")
             if not is_valid_price(trade_price_raw):
-                return
+                return  # ignore invalid/zero trades
             trade_price = float(trade_price_raw)
             live_price = trade_price
             last_valid_price = trade_price
+
             if not candles.empty:
                 idx = candles.index[-1]
+                # Ensure the candle's High/Low reflect the tick as well
                 candles.at[idx, "Close"] = trade_price
                 candles.at[idx, "High"] = max(candles.at[idx, "High"], trade_price)
                 candles.at[idx, "Low"] = min(candles.at[idx, "Low"], trade_price)
+
             trade_ts_ms = int(payload.get("T") or payload.get("E") or time.time() * 1000)
             try_trigger_on_trade(trade_price, trade_ts_ms)
+
     except Exception as e:
         print("on_message error:", e)
 
@@ -218,15 +240,13 @@ def run_ws():
     ws.run_forever(ping_interval=20, ping_timeout=10)
 
 # ==========================
-# Dash App + Flask routes
+# Dash App
 # ==========================
 app = dash.Dash(__name__)
-flask_app = app.server  # underlying Flask instance
-
 app.layout = html.Div([
     html.H1(f"{SYMBOL.upper()} Live Candlestick (Interval: {INTERVAL})"),
     dcc.Graph(id="candlestick"),
-    html.H2(id="live-price", style={"color": "yellow"}),
+    html.H2(id="live-price", style={"color": "black"}),
     html.Div(id="ohlc-values"),
     html.Div(id="bounds", style={"marginTop": "8px", "color": "#9ad"}),
     html.H3("Strategy Alerts"),
@@ -245,6 +265,7 @@ app.layout = html.Div([
 def update_graph(_):
     if len(candles) == 0:
         return go.Figure(), "Live Price: --", "OHLC: --", [], "Bounds: --"
+
     fig = go.Figure(data=[go.Candlestick(
         x=candles["time"],
         open=candles["Open"],
@@ -254,12 +275,18 @@ def update_graph(_):
         increasing_line_color='green',
         decreasing_line_color='red'
     )])
-    fig.update_layout(xaxis_rangeslider_visible=False, yaxis=dict(autorange=True), template="plotly_dark")
+    fig.update_layout(
+        xaxis_rangeslider_visible=False,
+        yaxis=dict(autorange=True),
+        template="plotly_dark"
+    )
+
     if upper_bound is not None and lower_bound is not None:
         fig.add_hline(y=upper_bound, line_dash="dot", line_color="lime",
                       annotation_text=f"Upper {fmt_price(upper_bound)}", annotation_position="top left")
         fig.add_hline(y=lower_bound, line_dash="dot", line_color="red",
                       annotation_text=f"Lower {fmt_price(lower_bound)}", annotation_position="bottom left")
+
     last = candles.iloc[-1]
     ohlc_text = (f"OHLC → O:{fmt_price(last['Open'])}, "
                  f"H:{fmt_price(last['High'])}, "
@@ -267,11 +294,13 @@ def update_graph(_):
                  f"C:{fmt_price(last['Close'])}")
     alerts_html = [html.Li(a) for a in alerts[-10:]]
     lp = f"Live Price: {fmt_price(live_price)}"
+
     if upper_bound is not None and lower_bound is not None and _bounds_candle_ts is not None:
         btxt = (f"Bounds[{LENGTH}] → Upper {fmt_price(upper_bound)}, Lower {fmt_price(lower_bound)} "
                 f"(from candle {_bounds_candle_ts.isoformat().replace('+00:00','Z')})")
     else:
         btxt = "Bounds: waiting for enough closed candles..."
+
     return fig, lp, ohlc_text, alerts_html, btxt
 
 # ==========================
