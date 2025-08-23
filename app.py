@@ -316,7 +316,7 @@ def keep_alive():
     except Exception as e:
         print("⚠️ Keep-alive ping failed:", str(e))
 
-@flask_app.route("/ping", methods=["GET"])
+@app.route("/ping", methods=["GET"])
 def ping():
     """Simple endpoint to check server health and trigger keep-alive."""
     keep_alive()
