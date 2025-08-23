@@ -12,6 +12,7 @@ from dash import dcc, html
 from dash.dependencies import Input, Output
 import plotly.graph_objs as go
 from flask import Flask, request, jsonify
+app = Flask(__name__)
 
 # ==========================
 # Config
