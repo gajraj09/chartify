@@ -12,18 +12,15 @@ from dash import dcc, html
 from dash.dependencies import Input, Output
 import plotly.graph_objs as go
 from flask import Flask, request, jsonify
-app = Flask(__name__)
 
 # ==========================
 # Config
 # ==========================
-SYMBOL = "xrpusdc"                     # Binance lowercase for WS
-INTERVAL = "5m"                        # Binance interval
-CANDLE_LIMIT = 10                     # Display last N candles
+SYMBOL = "xrpusdc"  # Binance lowercase for WS
+INTERVAL = "5m"     # Binance interval
+CANDLE_LIMIT = 10   # Display last N candles
 WEBHOOK_URL = "http://localhost:5000/webhook"  # Replace with your webhook URL
-
-LENGTH = 5  # last closed candles to form bounds
-
+LENGTH = 5          # last closed candles to form bounds
 PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
 
 # ==========================
@@ -86,7 +83,7 @@ def fetch_initial_candles():
 def send_webhook(message: str, trigger_time_iso: str, entry_price: float, side: str):
     try:
         payload = {
-            "symbol": "XRPUSDC",
+            "symbol": SYMBOL.upper(),
             "alert": message,
             "side": side,
             "entry_price": entry_price,
@@ -106,7 +103,6 @@ def recompute_bounds_on_close():
         return
 
     window = candles.tail(LENGTH)
-    # ensure bounds use valid prices only
     highs = window["High"][window["High"] > 0]
     lows = window["Low"][window["Low"] > 0]
     if highs.empty or lows.empty:
@@ -115,7 +111,7 @@ def recompute_bounds_on_close():
     upper_bound = float(highs.max())
     lower_bound = float(lows.min())
     _bounds_candle_ts = window["time"].iloc[-1]
-    _triggered_window_id = None  # reset guard for new window
+    _triggered_window_id = None
 
 def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
     """Trigger if trade price crosses bounds (one signal per window)."""
@@ -157,17 +153,13 @@ def on_message(ws, message):
             ts_dt = datetime.fromtimestamp(kline["t"] / 1000, tz=timezone.utc)
             o, h, l, c = float(kline["o"]), float(kline["h"]), float(kline["l"]), float(kline["c"])
 
-            # Keep last_valid_price current if c is valid
             if is_valid_price(c):
                 last_valid_price = c
-                live_price = c  # latest kline 'c' is a good approximation between trades
+                live_price = c
 
-            # New candle row?
             if candles.empty or candles.iloc[-1]["time"] != ts_dt:
-                # Seed with safe values to avoid zeros
                 open_val = o if is_valid_price(o) else (last_valid_price if last_valid_price is not None else None)
                 if open_val is None:
-                    # if we truly have no valid price, skip this kline update
                     return
                 high_val = h if is_valid_price(h) else open_val
                 low_val = l if is_valid_price(l) else open_val
@@ -177,7 +169,6 @@ def on_message(ws, message):
                            "Low": min(low_val, open_val), "Close": close_val}
                 candles = pd.concat([candles, pd.DataFrame([new_row])], ignore_index=True)
             else:
-                # Update current forming candle safely (ignore zero/invalid)
                 idx = candles.index[-1]
                 if is_valid_price(h):
                     candles.at[idx, "High"] = max(candles.at[idx, "High"], h)
@@ -191,22 +182,20 @@ def on_message(ws, message):
             if len(candles) > CANDLE_LIMIT:
                 candles = candles.tail(CANDLE_LIMIT).reset_index(drop=True)
 
-            # On candle close: recompute bounds
             if kline["x"]:
                 recompute_bounds_on_close()
 
-        # Trade ticks: update live price and current candle close (tick-by-tick)
+        # Trade ticks: update live price and current candle close
         elif stream and "trade" in stream:
             trade_price_raw = payload.get("p")
             if not is_valid_price(trade_price_raw):
-                return  # ignore invalid/zero trades
+                return
             trade_price = float(trade_price_raw)
             live_price = trade_price
             last_valid_price = trade_price
 
             if not candles.empty:
                 idx = candles.index[-1]
-                # Ensure the candle's High/Low reflect the tick as well
                 candles.at[idx, "Close"] = trade_price
                 candles.at[idx, "High"] = max(candles.at[idx, "High"], trade_price)
                 candles.at[idx, "Low"] = min(candles.at[idx, "Low"], trade_price)
@@ -241,9 +230,14 @@ def run_ws():
     ws.run_forever(ping_interval=20, ping_timeout=10)
 
 # ==========================
-# Dash App
+# Flask + Dash Setup
 # ==========================
-app = dash.Dash(__name__)
+server = Flask(__name__)  # Flask server
+app = dash.Dash(__name__, server=server)  # Dash app on top of Flask
+
+# ==========================
+# Dash Layout
+# ==========================
 app.layout = html.Div([
     html.H1(f"{SYMBOL.upper()} Live Candlestick (Interval: {INTERVAL})"),
     dcc.Graph(id="candlestick"),
@@ -276,11 +270,7 @@ def update_graph(_):
         increasing_line_color='green',
         decreasing_line_color='red'
     )])
-    fig.update_layout(
-        xaxis_rangeslider_visible=False,
-        yaxis=dict(autorange=True),
-        template="plotly_dark"
-    )
+    fig.update_layout(xaxis_rangeslider_visible=False, yaxis=dict(autorange=True), template="plotly_dark")
 
     if upper_bound is not None and lower_bound is not None:
         fig.add_hline(y=upper_bound, line_dash="dot", line_color="lime",
@@ -305,21 +295,23 @@ def update_graph(_):
     return fig, lp, ohlc_text, alerts_html, btxt
 
 # ==========================
-# Keep-alive functionality
+# Keep-alive periodic ping
 # ==========================
-def keep_alive():
-    """Send a ping to the server itself."""
-    try:
-        print(f"🔄 Pinging {PING_URL}")
-        r = requests.get(PING_URL, timeout=10)
-        print("✅ Ping response:", r.status_code)
-    except Exception as e:
-        print("⚠️ Keep-alive ping failed:", str(e))
+def keep_alive_loop(interval_sec=300):
+    while True:
+        try:
+            print(f"🔄 Pinging {PING_URL}")
+            r = requests.get(PING_URL, timeout=10)
+            print("✅ Ping response:", r.status_code)
+        except Exception as e:
+            print("⚠️ Keep-alive ping failed:", str(e))
+        time.sleep(interval_sec)
 
-@app.route("/ping", methods=["GET"])
+# ==========================
+# Flask route for manual ping
+# ==========================
+@server.route("/ping", methods=["GET"])
 def ping():
-    """Simple endpoint to check server health and trigger keep-alive."""
-    keep_alive()
     return jsonify({"status": "alive"}), 200
 
 # ==========================
@@ -332,6 +324,11 @@ if __name__ == "__main__":
         print("Initial fetch failed:", e)
     if len(candles) >= LENGTH:
         recompute_bounds_on_close()
+
+    # Start WebSocket in background
     threading.Thread(target=run_ws, daemon=True).start()
+    # Start keep-alive ping loop in background
+    threading.Thread(target=keep_alive_loop, daemon=True).start()
+
     port = int(os.environ.get("PORT", 8050))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    server.run(host="0.0.0.0", port=port, debug=False)
