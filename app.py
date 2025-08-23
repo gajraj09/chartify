@@ -11,16 +11,19 @@ import dash
 from dash import dcc, html
 from dash.dependencies import Input, Output
 import plotly.graph_objs as go
+from flask import jsonify
 
 # ==========================
 # Config
 # ==========================
 SYMBOL = "xrpusdc"                     # Binance lowercase for WS
 INTERVAL = "5m"                        # Binance interval
-CANDLE_LIMIT = 100                     # Display last N candles
+CANDLE_LIMIT = 10                     # Display last N candles
 WEBHOOK_URL = "http://localhost:5000/webhook"  # Replace with your webhook URL
 
 LENGTH = 5  # last closed candles to form bounds
+
+PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
 
 # ==========================
 # Globals
@@ -33,7 +36,7 @@ alerts = []
 upper_bound = None
 lower_bound = None
 _bounds_candle_ts = None
-_triggered_window_id = None
+_triggered_window_id = None  # prevents duplicate alerts within one window
 
 # ==========================
 # Utilities
@@ -215,9 +218,11 @@ def run_ws():
     ws.run_forever(ping_interval=20, ping_timeout=10)
 
 # ==========================
-# Dash App
+# Dash App + Flask routes
 # ==========================
 app = dash.Dash(__name__)
+flask_app = app.server  # underlying Flask instance
+
 app.layout = html.Div([
     html.H1(f"{SYMBOL.upper()} Live Candlestick (Interval: {INTERVAL})"),
     dcc.Graph(id="candlestick"),
@@ -270,6 +275,24 @@ def update_graph(_):
     return fig, lp, ohlc_text, alerts_html, btxt
 
 # ==========================
+# Keep-alive functionality
+# ==========================
+def keep_alive():
+    """Send a ping to the server itself."""
+    try:
+        print(f"🔄 Pinging {PING_URL}")
+        r = requests.get(PING_URL, timeout=10)
+        print("✅ Ping response:", r.status_code)
+    except Exception as e:
+        print("⚠️ Keep-alive ping failed:", str(e))
+
+@flask_app.route("/ping", methods=["GET"])
+def ping():
+    """Simple endpoint to check server health and trigger keep-alive."""
+    keep_alive()
+    return jsonify({"status": "alive"}), 200
+
+# ==========================
 # Main
 # ==========================
 if __name__ == "__main__":
@@ -279,7 +302,6 @@ if __name__ == "__main__":
         print("Initial fetch failed:", e)
     if len(candles) >= LENGTH:
         recompute_bounds_on_close()
-    t = threading.Thread(target=run_ws, daemon=True)
-    t.start()
+    threading.Thread(target=run_ws, daemon=True).start()
     port = int(os.environ.get("PORT", 8050))
     app.run(host="0.0.0.0", port=port, debug=False)
