@@ -42,8 +42,6 @@ status = None
 # Manual Seed Data
 # ==========================
 manual_candles = [
-    ("04:50:00", 3.0426, 3.0483, 3.0426, 3.0483),
-    ("04:55:00", 3.0482, 3.0508, 3.0471, 3.0505),
     ("05:00:00", 3.0507, 3.0507, 3.0467, 3.0482),
     ("05:05:00", 3.0486, 3.0502, 3.0450, 3.0500),
     ("05:10:00", 3.0497, 3.0533, 3.0497, 3.0522),
@@ -51,6 +49,8 @@ manual_candles = [
     ("05:20:00", 3.0505, 3.0537, 3.0474, 3.0499),
     ("05:25:00", 3.0501, 3.0501, 3.0473, 3.0473),
     ("05:30:00", 3.0476, 3.0502, 3.0465, 3.0465),
+    ("05:35:00", 3.0465, 3.0471, 3.0448, 3.0470),
+    ("05:40:00", 3.0469, 3.0525, 3.0469, 3.0509),
 ]
 
 # ==========================
@@ -135,7 +135,7 @@ def send_webhook(trigger_time_iso: str, entry_price: float, side: str):
     print(f"[WEBHOOK] {trigger_time_iso} | {side} | Entry: {entry_price} | {SYMBOL.upper()} | status: {status} | qty: {quantity}")
     try:
         payload = {
-            "symbol": SYMBOL.upper(),
+            "symbol": "XRPUSDC",
             "side": side,
             "quantity": quantity,
             "price": entry_price,
@@ -143,6 +143,7 @@ def send_webhook(trigger_time_iso: str, entry_price: float, side: str):
             "secret": secret
         }
         requests.post(WEBHOOK_URL, json=payload, timeout=5)
+        print(payload)
     except Exception as e:
         print("Webhook error:", e)
 
