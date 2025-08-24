@@ -116,9 +116,7 @@ def fetch_initial_candles():
     seed_manual_candles()
 
 def get_status(EntryCount: int) -> str:
-    # Pattern: 1-entry, 2-exit, 3-exit, repeat
-    result = "entry" if Entrycode%2 ==1 else "exit"
-    return result
+    return "entry" if EntryCount % 2 == 1 else "exit"
 
 def send_webhook(trigger_time_iso: str, entry_price: float, side: str,status: str):
     secret = "gajraj09"
