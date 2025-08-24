@@ -19,7 +19,7 @@ INTERVAL = "5m"
 CANDLE_LIMIT = 10
 PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
 LENGTH = 5  # last closed candles for bounds
-WEBHOOK_URL = "http://localhost:5000/webhook"
+WEBHOOK_URL = "https://binance-65gz.onrender.com/webhook"
 
 # ==========================
 # Globals
@@ -42,15 +42,15 @@ status = None
 # Manual Seed Data
 # ==========================
 manual_candles = [
-    ("04:25:00", 3.0483, 3.0491, 3.0442, 3.0442),
-    ("04:30:00", 3.0446, 3.0473, 3.0413, 3.0439),
     ("04:35:00", 3.0438, 3.0494, 3.0415, 3.0431),
     ("04:40:00", 3.0428, 3.0458, 3.0420, 3.0446),
     ("04:45:00", 3.0448, 3.0452, 3.0420, 3.0426),
     ("04:50:00", 3.0426, 3.0483, 3.0426, 3.0483),
     ("04:55:00", 3.0482, 3.0508, 3.0471, 3.0505),
     ("05:00:00", 3.0507, 3.0507, 3.0467, 3.0482),
-    ("05:05:00", 3.0486, 3.0502, 3.0450, 3.0500),
+    ("05:05:00", 3.0486, 3.0532, 3.0450, 3.0532),
+    ("05:10:00", 3.0497, 3.0533, 3.0497, 3.0522),
+    ("05:15:00", 3.0520, 3.0541, 3.0489, 3.0510),
 ]
 
 # ==========================
@@ -165,14 +165,14 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
         EntryCount = EntryCount + 1 if LastSide == side else 1
         LastSide = side
         send_webhook(iso, upper_bound, side)
-        alerts.append(f"LONG breakout {fmt_price(upper_bound)} | Live {fmt_price(trade_price)} | {iso}")
+        alerts.append(f"LONG breakout {fmt_price(upper_bound)} | {stauts}: {fmt_price(trade_price)} | {iso}")
         _triggered_window_id = _bounds_candle_ts
     elif trade_price <= lower_bound:
         side = "sell"
         EntryCount = EntryCount + 1 if LastSide == side else 1
         LastSide = side
         send_webhook(iso, lower_bound, side)
-        alerts.append(f"SHORT breakout {fmt_price(lower_bound)} | Live {fmt_price(trade_price)} | {iso}")
+        alerts.append(f"SHORT breakout {fmt_price(lower_bound)} | {status}: {fmt_price(trade_price)} | {iso}")
         _triggered_window_id = _bounds_candle_ts
     alerts[:] = alerts[-50:]
 
@@ -268,15 +268,14 @@ def update_display(_):
     return lp, ohlc_html, alerts_html, btxt
 
 # Keep-alive ping thread
-def ping_loop():
-    while True:
-        try:
-            print(f"🔄 Pinging {PING_URL}")
-            r = requests.get(PING_URL, timeout=10)
-            print("✅ Ping response:", r.status_code)
-        except Exception as e:
-            print("⚠️ Keep-alive ping failed:", e)
-        time.sleep(300)  # every 5 min
+def keep_alive():
+    """Send a ping to the server itself."""
+    try:
+        print(f"🔄 Pinging {PING_URL}")
+        r = requests.get(PING_URL, timeout=10)
+        print("✅ Ping response:", r.status_code)
+    except Exception as e:
+        print("⚠️ Keep-alive ping failed:", str(e))
 
 @server.route('/ping', methods=['GET'])
 def ping():
