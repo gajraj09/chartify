@@ -43,15 +43,15 @@ status = None
 # Manual Seed Data
 # ==========================
 manual_candles = [
-    ("06:40:00", 3.0313, 3.0352, 3.0309, 3.0339),
-    ("06:45:00", 3.0339, 3.0339, 3.0291, 3.0302),
-    ("06:50:00", 3.0302, 3.0384, 3.0296, 3.0352),
-    ("06:55:00", 3.0349, 3.0351, 3.0298, 3.0311),
-    ("07:00:00", 3.0310, 3.0337, 3.0297, 3.0335),
-    ("07:05:00", 3.0336, 3.0367, 3.0333, 3.0344),
-    ("07:10:00", 3.0344, 3.0414, 3.0344, 3.0407),
-    ("07:15:00", 3.0407, 3.0407, 3.0306, 3.0306),
-    ("07:20:00", 3.0307, 3.0387, 3.0307, 3.0385),
+    ("07:40:00", 3.0467, 3.0467, 3.0406, 3.0416),
+    ("07:45:00", 3.0418, 3.0451, 3.0411, 3.0419),
+    ("07:50:00", 3.0419, 3.0447, 3.0382, 3.0393),
+    ("07:55:00", 3.0397, 3.0411, 3.0345, 3.0353),
+    ("08:00:00", 3.0353, 3.0364, 3.0273, 3.0342),
+    ("08:05:00", 3.0338, 3.0415, 3.0320, 3.0415),
+    ("08:10:00", 3.0414, 3.0471, 3.0404, 3.0454),
+    ("08:15:00", 3.0452, 3.0466, 3.0413, 3.0414),
+    ("08:20:00", 3.0415, 3.0419, 3.0348, 3.0397)
 ]
 
 # ==========================
@@ -77,6 +77,17 @@ def fmt_price(p):
 # ==========================
 # Helpers
 # ==========================
+def safe_price(p):
+    """Return valid price; fallback to last valid price"""
+    global last_valid_price
+    try:
+        p = float(p)
+        if p <= 0:
+            return last_valid_price or 1.0
+        last_valid_price = p
+        return p
+    except Exception:
+        return last_valid_price or 1.0
 def seed_manual_candles():
     global candles, live_price, last_valid_price
     today = datetime.now(timezone.utc).date()
@@ -159,9 +170,37 @@ def recompute_bounds_on_close():
 
 
 
+# def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
+#     global alerts, _triggered_window_id, EntryCount, LastSide, status
+#     if not (is_valid_price(trade_price) and upper_bound and lower_bound and _bounds_candle_ts):
+#         return
+#     if _triggered_window_id == _bounds_candle_ts:
+#         return
+#     trigger_time = datetime.fromtimestamp(trade_ts_ms / 1000, tz=timezone.utc)
+#     iso = trigger_time.isoformat()
+
+#     if trade_price >= upper_bound:
+#         side = "buy"
+#         EntryCount = EntryCount + 1 if LastSide == side else 1
+#         LastSide = side
+#         status = get_status(EntryCount)
+#         send_webhook(iso, upper_bound, side,status)
+#         alerts.append(f"LONG breakout {fmt_price(upper_bound)} | {status}: {fmt_price(trade_price)} | {iso}")
+#         _triggered_window_id = _bounds_candle_ts
+#     elif trade_price <= lower_bound:
+#         side = "sell"
+#         EntryCount = EntryCount + 1 if LastSide == side else 1
+#         LastSide = side
+#         status = get_status(EntryCount)
+#         send_webhook(iso, lower_bound, side,status)
+#         alerts.append(f"SHORT breakout {fmt_price(lower_bound)} | {status}: {fmt_price(trade_price)} | {iso}")
+#         _triggered_window_id = _bounds_candle_ts
+#     alerts[:] = alerts[-50:]
+
 def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
     global alerts, _triggered_window_id, EntryCount, LastSide, status
-    if not (is_valid_price(trade_price) and upper_bound and lower_bound and _bounds_candle_ts):
+    trade_price = safe_price(trade_price)
+    if not (trade_price and upper_bound and lower_bound and _bounds_candle_ts):
         return
     if _triggered_window_id == _bounds_candle_ts:
         return
@@ -173,7 +212,7 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
         EntryCount = EntryCount + 1 if LastSide == side else 1
         LastSide = side
         status = get_status(EntryCount)
-        send_webhook(iso, upper_bound, side,status)
+        send_webhook(iso, upper_bound, side, status)
         alerts.append(f"LONG breakout {fmt_price(upper_bound)} | {status}: {fmt_price(trade_price)} | {iso}")
         _triggered_window_id = _bounds_candle_ts
     elif trade_price <= lower_bound:
@@ -181,7 +220,7 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
         EntryCount = EntryCount + 1 if LastSide == side else 1
         LastSide = side
         status = get_status(EntryCount)
-        send_webhook(iso, lower_bound, side,status)
+        send_webhook(iso, lower_bound, side, status)
         alerts.append(f"SHORT breakout {fmt_price(lower_bound)} | {status}: {fmt_price(trade_price)} | {iso}")
         _triggered_window_id = _bounds_candle_ts
     alerts[:] = alerts[-50:]
@@ -189,6 +228,44 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
 # ==========================
 # WebSocket
 # ==========================
+# def on_message(ws, message):
+#     global candles, live_price, last_valid_price
+#     try:
+#         data = json.loads(message)
+#         stream, payload = data.get("stream"), data.get("data")
+
+#         if "kline" in stream:
+#             k = payload["k"]
+#             ts = datetime.fromtimestamp(k["t"]/1000, tz=timezone.utc)
+#             o, h, l, c = float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"])
+#             live_price = c; last_valid_price = c
+
+#             if candles.empty or candles.iloc[-1]["time"] != ts:
+#                 candles = pd.concat([candles, pd.DataFrame([{"time": ts, "Open": o, "High": h, "Low": l, "Close": c}])], ignore_index=True)
+#             else:
+#                 idx = candles.index[-1]
+#                 candles.at[idx, "High"] = max(candles.at[idx, "High"], h)
+#                 candles.at[idx, "Low"] = min(candles.at[idx, "Low"], l)
+#                 candles.at[idx, "Close"] = c
+
+#             if len(candles) > CANDLE_LIMIT:
+#                 candles = candles.tail(CANDLE_LIMIT).reset_index(drop=True)
+#             if k["x"]:
+#                 recompute_bounds_on_close()
+
+#         elif "trade" in stream:
+#             trade_price = float(payload["p"])
+#             live_price = trade_price
+#             last_valid_price = trade_price
+#             if not candles.empty:
+#                 idx = candles.index[-1]
+#                 candles.at[idx, "Close"] = trade_price
+#                 candles.at[idx, "High"] = max(candles.at[idx, "High"], trade_price)
+#                 candles.at[idx, "Low"] = min(candles.at[idx, "Low"], trade_price)
+#             try_trigger_on_trade(trade_price, payload["T"])
+#     except Exception as e:
+#         print("on_message error:", e)
+
 def on_message(ws, message):
     global candles, live_price, last_valid_price
     try:
@@ -198,8 +275,8 @@ def on_message(ws, message):
         if "kline" in stream:
             k = payload["k"]
             ts = datetime.fromtimestamp(k["t"]/1000, tz=timezone.utc)
-            o, h, l, c = float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"])
-            live_price = c; last_valid_price = c
+            o, h, l, c = safe_price(k["o"]), safe_price(k["h"]), safe_price(k["l"]), safe_price(k["c"])
+            live_price = c
 
             if candles.empty or candles.iloc[-1]["time"] != ts:
                 candles = pd.concat([candles, pd.DataFrame([{"time": ts, "Open": o, "High": h, "Low": l, "Close": c}])], ignore_index=True)
@@ -215,9 +292,8 @@ def on_message(ws, message):
                 recompute_bounds_on_close()
 
         elif "trade" in stream:
-            trade_price = float(payload["p"])
+            trade_price = safe_price(payload["p"])
             live_price = trade_price
-            last_valid_price = trade_price
             if not candles.empty:
                 idx = candles.index[-1]
                 candles.at[idx, "Close"] = trade_price
