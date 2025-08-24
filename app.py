@@ -10,6 +10,7 @@ import websocket
 import dash
 from dash import dcc, html
 from dash.dependencies import Input, Output
+from flask import Flask, request, jsonify
 
 # ==========================
 # Config
@@ -119,8 +120,7 @@ def get_status(EntryCount: int) -> str:
     cycle = ["entry", "exit", "exit"]
     return cycle[(EntryCount - 1) % 3]
 
-def send_webhook(trigger_time_iso: str, entry_price: float, side: str):
-    global EntryCount, LastSide, status
+def send_webhook(trigger_time_iso: str, entry_price: float, side: str,status: str):
     secret = "gajraj09"
     quantity = 1.8
 
@@ -130,7 +130,7 @@ def send_webhook(trigger_time_iso: str, entry_price: float, side: str):
     #     status = "exit"
     # if EntryCount % 3 == 0:
     #     status = "exit"
-    status = get_status(EntryCount)
+    
 
     print(f"[WEBHOOK] {trigger_time_iso} | {side} | Entry: {entry_price} | {SYMBOL.upper()} | status: {status} | qty: {quantity}")
     try:
@@ -146,6 +146,7 @@ def send_webhook(trigger_time_iso: str, entry_price: float, side: str):
         print(payload)
     except Exception as e:
         print("Webhook error:", e)
+        print("Payload Error")
 
 def recompute_bounds_on_close():
     global upper_bound, lower_bound, _bounds_candle_ts, _triggered_window_id
@@ -173,14 +174,16 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
         side = "buy"
         EntryCount = EntryCount + 1 if LastSide == side else 1
         LastSide = side
-        send_webhook(iso, upper_bound, side)
-        alerts.append(f"LONG breakout {fmt_price(upper_bound)} | {stauts}: {fmt_price(trade_price)} | {iso}")
+        status = get_status(EntryCount)
+        send_webhook(iso, upper_bound, side,status)
+        alerts.append(f"LONG breakout {fmt_price(upper_bound)} | {status}: {fmt_price(trade_price)} | {iso}")
         _triggered_window_id = _bounds_candle_ts
     elif trade_price <= lower_bound:
         side = "sell"
         EntryCount = EntryCount + 1 if LastSide == side else 1
         LastSide = side
-        send_webhook(iso, lower_bound, side)
+        status = get_status(EntryCount)
+        send_webhook(iso, lower_bound, side,status)
         alerts.append(f"SHORT breakout {fmt_price(lower_bound)} | {status}: {fmt_price(trade_price)} | {iso}")
         _triggered_window_id = _bounds_candle_ts
     alerts[:] = alerts[-50:]
