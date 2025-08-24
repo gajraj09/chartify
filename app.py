@@ -61,26 +61,57 @@ def fmt_price(p):
 # ==========================
 # Helpers
 # ==========================
-def fetch_initial_candles():
+# def fetch_initial_candles():
+#     global candles, live_price, last_valid_price
+#     url = f"https://fapi.binance.com/fapi/v1/klines?symbol={SYMBOL.upper()}&interval={INTERVAL}&limit={CANDLE_LIMIT}"
+#     r = requests.get(url, timeout=10)
+#     r.raise_for_status()
+#     data = r.json()
+
+#     rows = []
+#     for k in data:
+#         rows.append({
+#             "time": datetime.fromtimestamp(k[0] / 1000, tz=timezone.utc),
+#             "Open": float(k[1]),
+#             "High": float(k[2]),
+#             "Low": float(k[3]),
+#             "Close": float(k[4]),
+#         })
+#     candles = pd.DataFrame(rows)
+#     if not candles.empty:
+#         live_price = float(candles["Close"].iloc[-1])
+#         last_valid_price = live_price if is_valid_price(live_price) else None
+
+def fetch_initial_candles(retries=5, delay=2):
     global candles, live_price, last_valid_price
     url = f"https://fapi.binance.com/fapi/v1/klines?symbol={SYMBOL.upper()}&interval={INTERVAL}&limit={CANDLE_LIMIT}"
-    r = requests.get(url, timeout=10)
-    r.raise_for_status()
-    data = r.json()
+    for attempt in range(retries):
+        try:
+            print(f"Fetching candles attempt {attempt+1} ...")
+            r = requests.get(url, timeout=10)
+            r.raise_for_status()
+            data = r.json()
 
-    rows = []
-    for k in data:
-        rows.append({
-            "time": datetime.fromtimestamp(k[0] / 1000, tz=timezone.utc),
-            "Open": float(k[1]),
-            "High": float(k[2]),
-            "Low": float(k[3]),
-            "Close": float(k[4]),
-        })
-    candles = pd.DataFrame(rows)
-    if not candles.empty:
-        live_price = float(candles["Close"].iloc[-1])
-        last_valid_price = live_price if is_valid_price(live_price) else None
+            rows = []
+            for k in data:
+                rows.append({
+                    "time": datetime.fromtimestamp(k[0] / 1000, tz=timezone.utc),
+                    "Open": float(k[1]),
+                    "High": float(k[2]),
+                    "Low": float(k[3]),
+                    "Close": float(k[4]),
+                })
+            candles = pd.DataFrame(rows)
+            if not candles.empty:
+                live_price = float(candles["Close"].iloc[-1])
+                last_valid_price = live_price if is_valid_price(live_price) else None
+                print("✅ Historical candles fetched:", len(candles))
+                return
+        except Exception as e:
+            print("⚠️ Fetch failed:", e)
+            time.sleep(delay)
+    print("❌ Could not fetch candles after retries")
+
 
 def send_webhook(trigger_time_iso: str, entry_price: float, side: str):
     global EntryCount, LastSide, status
