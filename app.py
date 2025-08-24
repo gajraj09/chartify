@@ -2,7 +2,7 @@ import os
 import json
 import time
 import threading
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 import pandas as pd
 import requests
@@ -17,9 +17,9 @@ from dash.dependencies import Input, Output
 SYMBOL = "xrpusdc"
 INTERVAL = "5m"
 CANDLE_LIMIT = 10
-WEBHOOK_URL = "http://localhost:5000/webhook"
-
+PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
 LENGTH = 5  # last closed candles for bounds
+WEBHOOK_URL = "http://localhost:5000/webhook"
 
 # ==========================
 # Globals
@@ -39,11 +39,9 @@ LastSide = None
 status = None
 
 # ==========================
-# Manual Seed Data (when Binance fetch fails)
+# Manual Seed Data
 # ==========================
 manual_candles = [
-    ("04:10:00", 3.0467, 3.0520, 3.0451, 3.0493),
-    ("04:15:00", 3.0491, 3.0511, 3.0454, 3.0486),
     ("04:20:00", 3.0482, 3.0514, 3.0469, 3.0482),
     ("04:25:00", 3.0483, 3.0491, 3.0442, 3.0442),
     ("04:30:00", 3.0446, 3.0473, 3.0413, 3.0439),
@@ -51,8 +49,9 @@ manual_candles = [
     ("04:40:00", 3.0428, 3.0458, 3.0420, 3.0446),
     ("04:45:00", 3.0448, 3.0452, 3.0420, 3.0426),
     ("04:50:00", 3.0426, 3.0483, 3.0426, 3.0483),
+    ("04:55:00", 3.0482, 3.0508, 3.0471, 3.0505),
+    ("05:00:00", 3.0507, 3.0507, 3.0467, 3.0482),
 ]
-
 
 # ==========================
 # Utilities
@@ -78,7 +77,6 @@ def fmt_price(p):
 # Helpers
 # ==========================
 def seed_manual_candles():
-    """Load fallback candles manually"""
     global candles, live_price, last_valid_price
     today = datetime.now(timezone.utc).date()
     rows = []
@@ -97,11 +95,10 @@ def fetch_initial_candles():
         r = requests.get(url, timeout=10)
         r.raise_for_status()
         data = r.json()
-
         rows = []
         for k in data:
             rows.append({
-                "time": datetime.fromtimestamp(k[0] / 1000, tz=timezone.utc),
+                "time": datetime.fromtimestamp(k[0]/1000, tz=timezone.utc),
                 "Open": float(k[1]),
                 "High": float(k[2]),
                 "Low": float(k[3]),
@@ -115,8 +112,6 @@ def fetch_initial_candles():
             return
     except Exception as e:
         print("⚠️ Binance fetch failed:", e)
-
-    # fallback
     seed_manual_candles()
 
 def send_webhook(trigger_time_iso: str, entry_price: float, side: str):
@@ -192,7 +187,7 @@ def on_message(ws, message):
 
         if "kline" in stream:
             k = payload["k"]
-            ts = datetime.fromtimestamp(k["t"] / 1000, tz=timezone.utc)
+            ts = datetime.fromtimestamp(k["t"]/1000, tz=timezone.utc)
             o, h, l, c = float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"])
             live_price = c; last_valid_price = c
 
@@ -224,16 +219,25 @@ def on_message(ws, message):
 
 def run_ws():
     url = "wss://fstream.binance.com/stream"
-    ws = websocket.WebSocketApp(url, on_open=lambda ws: ws.send(json.dumps({
-        "method": "SUBSCRIBE", "params": [f"{SYMBOL}@kline_{INTERVAL}", f"{SYMBOL}@trade"], "id": 1
-    })), on_message=on_message, on_error=lambda ws, err: print("WS error:", err),
-        on_close=lambda ws, code, msg: threading.Thread(target=run_ws, daemon=True).start())
+    ws = websocket.WebSocketApp(
+        url,
+        on_open=lambda ws: ws.send(json.dumps({
+            "method": "SUBSCRIBE",
+            "params": [f"{SYMBOL}@kline_{INTERVAL}", f"{SYMBOL}@trade"],
+            "id": 1
+        })),
+        on_message=on_message,
+        on_error=lambda ws, err: print("WS error:", err),
+        on_close=lambda ws, code, msg: threading.Thread(target=run_ws, daemon=True).start()
+    )
     ws.run_forever(ping_interval=20, ping_timeout=10)
 
 # ==========================
-# Dash App
+# Dash + Flask Server
 # ==========================
 app = dash.Dash(__name__)
+server = app.server  # expose Flask server for Render/Heroku
+
 app.layout = html.Div([
     html.H1(f"{SYMBOL.upper()} Live Prices & Last {CANDLE_LIMIT} Candles"),
     html.H2(id="live-price"),
@@ -260,11 +264,24 @@ def update_display(_):
                           f"L:{fmt_price(row['Low'])}, C:{fmt_price(row['Close'])}") 
                  for _, row in candles.iterrows()]
     alerts_html = [html.Li(a) for a in alerts[-10:]]
-    if upper_bound and lower_bound:
-        btxt = f"Bounds[{LENGTH}] → Upper {fmt_price(upper_bound)}, Lower {fmt_price(lower_bound)}"
-    else:
-        btxt = "Bounds: waiting..."
+    btxt = f"Bounds[{LENGTH}] → Upper {fmt_price(upper_bound)}, Lower {fmt_price(lower_bound)}" if upper_bound and lower_bound else "Bounds: waiting..."
     return lp, ohlc_html, alerts_html, btxt
+
+# Keep-alive ping thread
+def ping_loop():
+    while True:
+        try:
+            print(f"🔄 Pinging {PING_URL}")
+            r = requests.get(PING_URL, timeout=10)
+            print("✅ Ping response:", r.status_code)
+        except Exception as e:
+            print("⚠️ Keep-alive ping failed:", e)
+        time.sleep(300)  # every 5 min
+
+@server.route('/ping', methods=['GET'])
+def ping():
+    ping_loop()
+    return jsonify({"status": "alive"}), 200
 
 # ==========================
 # Main
@@ -274,9 +291,311 @@ if __name__ == "__main__":
     if len(candles) >= LENGTH:
         recompute_bounds_on_close()
     threading.Thread(target=run_ws, daemon=True).start()
-    # app.run(debug=True, port=8050)
+    # threading.Thread(target=ping_loop, daemon=True).start()
     port = int(os.environ.get("PORT", 8050))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run_server(host="0.0.0.0", port=port, debug=False)
+
+
+# import os
+# import json
+# import time
+# import threading
+# from datetime import datetime, timezone, timedelta
+
+# import pandas as pd
+# import requests
+# import websocket
+# import dash
+# from dash import dcc, html
+# from dash.dependencies import Input, Output
+# import requests
+# from flask import Flask, request, jsonify
+
+# pinger = Flask(__name__)
+
+# # ==========================
+# # Config
+# # ==========================
+# SYMBOL = "xrpusdc"
+# INTERVAL = "5m"
+# CANDLE_LIMIT = 10
+# WEBHOOK_URL = "http://localhost:5000/webhook"
+# PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
+
+# LENGTH = 5  # last closed candles for bounds
+
+# # ==========================
+# # Globals
+# # ==========================
+# candles = pd.DataFrame(columns=["time", "Open", "High", "Low", "Close"])
+# live_price = None
+# last_valid_price = None
+# alerts = []
+
+# upper_bound = None
+# lower_bound = None
+# _bounds_candle_ts = None
+# _triggered_window_id = None
+
+# EntryCount = 0
+# LastSide = None
+# status = None
+
+# # ==========================
+# # Manual Seed Data (when Binance fetch fails)
+# # ==========================
+# manual_candles = [
+#     ("04:10:00", 3.0467, 3.0520, 3.0451, 3.0493),
+#     ("04:15:00", 3.0491, 3.0511, 3.0454, 3.0486),
+#     ("04:20:00", 3.0482, 3.0514, 3.0469, 3.0482),
+#     ("04:25:00", 3.0483, 3.0491, 3.0442, 3.0442),
+#     ("04:30:00", 3.0446, 3.0473, 3.0413, 3.0439),
+#     ("04:35:00", 3.0438, 3.0494, 3.0415, 3.0431),
+#     ("04:40:00", 3.0428, 3.0458, 3.0420, 3.0446),
+#     ("04:45:00", 3.0448, 3.0452, 3.0420, 3.0426),
+#     ("04:50:00", 3.0426, 3.0483, 3.0426, 3.0483),
+# ]
+
+
+# # ==========================
+# # Utilities
+# # ==========================
+# def is_valid_price(x):
+#     try:
+#         return float(x) > 0
+#     except Exception:
+#         return False
+
+# def fmt_price(p):
+#     if p is None:
+#         return "--"
+#     ap = abs(p)
+#     if ap >= 100:
+#         return f"{p:.2f}"
+#     elif ap >= 1:
+#         return f"{p:.4f}"
+#     else:
+#         return f"{p:.8f}"
+
+# # ==========================
+# # Helpers
+# # ==========================
+# def seed_manual_candles():
+#     """Load fallback candles manually"""
+#     global candles, live_price, last_valid_price
+#     today = datetime.now(timezone.utc).date()
+#     rows = []
+#     for t, o, h, l, c in manual_candles:
+#         dt = datetime.strptime(f"{today} {t}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+#         rows.append({"time": dt, "Open": o, "High": h, "Low": l, "Close": c})
+#     candles = pd.DataFrame(rows)
+#     live_price = candles["Close"].iloc[-1]
+#     last_valid_price = live_price
+#     print(f"✅ Seeded {len(candles)} manual candles")
+
+# def fetch_initial_candles():
+#     global candles, live_price, last_valid_price
+#     try:
+#         url = f"https://fapi.binance.com/fapi/v1/klines?symbol={SYMBOL.upper()}&interval={INTERVAL}&limit={CANDLE_LIMIT}"
+#         r = requests.get(url, timeout=10)
+#         r.raise_for_status()
+#         data = r.json()
+
+#         rows = []
+#         for k in data:
+#             rows.append({
+#                 "time": datetime.fromtimestamp(k[0] / 1000, tz=timezone.utc),
+#                 "Open": float(k[1]),
+#                 "High": float(k[2]),
+#                 "Low": float(k[3]),
+#                 "Close": float(k[4]),
+#             })
+#         candles = pd.DataFrame(rows)
+#         if not candles.empty:
+#             live_price = float(candles["Close"].iloc[-1])
+#             last_valid_price = live_price
+#             print(f"✅ Binance returned {len(candles)} candles")
+#             return
+#     except Exception as e:
+#         print("⚠️ Binance fetch failed:", e)
+
+#     # fallback
+#     seed_manual_candles()
+
+# def send_webhook(trigger_time_iso: str, entry_price: float, side: str):
+#     global EntryCount, LastSide, status
+#     secret = "gajraj09"
+#     quantity = 1.8
+
+#     if EntryCount % 2 == 1:
+#         status = "entry"
+#     else:
+#         status = "exit"
+#     if EntryCount % 3 == 0:
+#         status = "exit"
+
+#     print(f"[WEBHOOK] {trigger_time_iso} | {side} | Entry: {entry_price} | {SYMBOL.upper()} | status: {status} | qty: {quantity}")
+#     try:
+#         payload = {
+#             "symbol": SYMBOL.upper(),
+#             "side": side,
+#             "quantity": quantity,
+#             "price": entry_price,
+#             "status": status,
+#             "secret": secret
+#         }
+#         requests.post(WEBHOOK_URL, json=payload, timeout=5)
+#     except Exception as e:
+#         print("Webhook error:", e)
+
+# def recompute_bounds_on_close():
+#     global upper_bound, lower_bound, _bounds_candle_ts, _triggered_window_id
+#     if len(candles) < LENGTH:
+#         return
+#     window = candles.tail(LENGTH)
+#     upper_bound = float(window["High"].max())
+#     lower_bound = float(window["Low"].min())
+#     _bounds_candle_ts = window["time"].iloc[-1]
+#     _triggered_window_id = None
+#     print(f"📊 Bounds recomputed: Upper={upper_bound}, Lower={lower_bound}")
+
+# def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
+#     global alerts, _triggered_window_id, EntryCount, LastSide, status
+#     if not (is_valid_price(trade_price) and upper_bound and lower_bound and _bounds_candle_ts):
+#         return
+#     if _triggered_window_id == _bounds_candle_ts:
+#         return
+#     trigger_time = datetime.fromtimestamp(trade_ts_ms / 1000, tz=timezone.utc)
+#     iso = trigger_time.isoformat()
+
+#     if trade_price >= upper_bound:
+#         side = "buy"
+#         EntryCount = EntryCount + 1 if LastSide == side else 1
+#         LastSide = side
+#         send_webhook(iso, upper_bound, side)
+#         alerts.append(f"LONG breakout {fmt_price(upper_bound)} | Live {fmt_price(trade_price)} | {iso}")
+#         _triggered_window_id = _bounds_candle_ts
+#     elif trade_price <= lower_bound:
+#         side = "sell"
+#         EntryCount = EntryCount + 1 if LastSide == side else 1
+#         LastSide = side
+#         send_webhook(iso, lower_bound, side)
+#         alerts.append(f"SHORT breakout {fmt_price(lower_bound)} | Live {fmt_price(trade_price)} | {iso}")
+#         _triggered_window_id = _bounds_candle_ts
+#     alerts[:] = alerts[-50:]
+
+# # ==========================
+# # WebSocket
+# # ==========================
+# def on_message(ws, message):
+#     global candles, live_price, last_valid_price
+#     try:
+#         data = json.loads(message)
+#         stream, payload = data.get("stream"), data.get("data")
+
+#         if "kline" in stream:
+#             k = payload["k"]
+#             ts = datetime.fromtimestamp(k["t"] / 1000, tz=timezone.utc)
+#             o, h, l, c = float(k["o"]), float(k["h"]), float(k["l"]), float(k["c"])
+#             live_price = c; last_valid_price = c
+
+#             if candles.empty or candles.iloc[-1]["time"] != ts:
+#                 candles = pd.concat([candles, pd.DataFrame([{"time": ts, "Open": o, "High": h, "Low": l, "Close": c}])], ignore_index=True)
+#             else:
+#                 idx = candles.index[-1]
+#                 candles.at[idx, "High"] = max(candles.at[idx, "High"], h)
+#                 candles.at[idx, "Low"] = min(candles.at[idx, "Low"], l)
+#                 candles.at[idx, "Close"] = c
+
+#             if len(candles) > CANDLE_LIMIT:
+#                 candles = candles.tail(CANDLE_LIMIT).reset_index(drop=True)
+#             if k["x"]:
+#                 recompute_bounds_on_close()
+
+#         elif "trade" in stream:
+#             trade_price = float(payload["p"])
+#             live_price = trade_price
+#             last_valid_price = trade_price
+#             if not candles.empty:
+#                 idx = candles.index[-1]
+#                 candles.at[idx, "Close"] = trade_price
+#                 candles.at[idx, "High"] = max(candles.at[idx, "High"], trade_price)
+#                 candles.at[idx, "Low"] = min(candles.at[idx, "Low"], trade_price)
+#             try_trigger_on_trade(trade_price, payload["T"])
+#     except Exception as e:
+#         print("on_message error:", e)
+
+# def run_ws():
+#     url = "wss://fstream.binance.com/stream"
+#     ws = websocket.WebSocketApp(url, on_open=lambda ws: ws.send(json.dumps({
+#         "method": "SUBSCRIBE", "params": [f"{SYMBOL}@kline_{INTERVAL}", f"{SYMBOL}@trade"], "id": 1
+#     })), on_message=on_message, on_error=lambda ws, err: print("WS error:", err),
+#         on_close=lambda ws, code, msg: threading.Thread(target=run_ws, daemon=True).start())
+#     ws.run_forever(ping_interval=20, ping_timeout=10)
+
+# # ==========================
+# # Dash App
+# # ==========================
+# app = dash.Dash(__name__)
+# app.layout = html.Div([
+#     html.H1(f"{SYMBOL.upper()} Live Prices & Last {CANDLE_LIMIT} Candles"),
+#     html.H2(id="live-price"),
+#     html.Div(id="ohlc-values"),
+#     html.Div(id="bounds", style={"marginTop": "8px", "color": "#9ad"}),
+#     html.H3("Strategy Alerts"),
+#     html.Ul(id="strategy-alerts"),
+#     dcc.Interval(id="interval", interval=1000, n_intervals=0)
+# ])
+
+# @app.callback(
+#     [Output("live-price", "children"),
+#      Output("ohlc-values", "children"),
+#      Output("strategy-alerts", "children"),
+#      Output("bounds", "children")],
+#     [Input("interval", "n_intervals")]
+# )
+# def update_display(_):
+#     if candles.empty:
+#         return "Live Price: --", "OHLC: --", [], "Bounds: --"
+#     lp = f"Live Price: {fmt_price(live_price)}"
+#     ohlc_html = [html.Div(f"{row['time'].strftime('%H:%M:%S')} → "
+#                           f"O:{fmt_price(row['Open'])}, H:{fmt_price(row['High'])}, "
+#                           f"L:{fmt_price(row['Low'])}, C:{fmt_price(row['Close'])}") 
+#                  for _, row in candles.iterrows()]
+#     alerts_html = [html.Li(a) for a in alerts[-10:]]
+#     if upper_bound and lower_bound:
+#         btxt = f"Bounds[{LENGTH}] → Upper {fmt_price(upper_bound)}, Lower {fmt_price(lower_bound)}"
+#     else:
+#         btxt = "Bounds: waiting..."
+#     return lp, ohlc_html, alerts_html, btxt
+
+
+# def keep_alive():
+#     """Send a ping to the server itself."""
+#     try:
+#         print(f"🔄 Pinging {PING_URL}")
+#         r = requests.get(PING_URL, timeout=10)
+#         print("✅ Ping response:", r.status_code)
+#     except Exception as e:
+#         print("⚠️ Keep-alive ping failed:", str(e))
+
+
+# @pinger.route('/ping', methods=['GET'])
+# def ping():
+#     """Simple endpoint to check server health and trigger keep-alive."""
+#     keep_alive()
+#     return jsonify({"status": "alive"}), 200
+# # ==========================
+# # Main
+# # ==========================
+# if __name__ == "__main__":
+#     fetch_initial_candles()
+#     if len(candles) >= LENGTH:
+#         recompute_bounds_on_close()
+#     threading.Thread(target=run_ws, daemon=True).start()
+#     # app.run(debug=True, port=8050)
+#     port = int(os.environ.get("PORT", 8050))
+#     app.run(host="0.0.0.0", port=port, debug=False)
 
 
 
