@@ -42,15 +42,15 @@ status = None
 # Manual Seed Data
 # ==========================
 manual_candles = [
-    ("04:35:00", 3.0438, 3.0494, 3.0415, 3.0431),
-    ("04:40:00", 3.0428, 3.0458, 3.0420, 3.0446),
     ("04:45:00", 3.0448, 3.0452, 3.0420, 3.0426),
     ("04:50:00", 3.0426, 3.0483, 3.0426, 3.0483),
     ("04:55:00", 3.0482, 3.0508, 3.0471, 3.0505),
     ("05:00:00", 3.0507, 3.0507, 3.0467, 3.0482),
-    ("05:05:00", 3.0486, 3.0532, 3.0450, 3.0532),
+    ("05:05:00", 3.0486, 3.0502, 3.0450, 3.0500),
     ("05:10:00", 3.0497, 3.0533, 3.0497, 3.0522),
     ("05:15:00", 3.0520, 3.0541, 3.0489, 3.0510),
+    ("05:20:00", 3.0505, 3.0537, 3.0474, 3.0499),
+    ("05:25:00", 3.0501, 3.0501, 3.0473, 3.0473),
 ]
 
 # ==========================
@@ -114,17 +114,23 @@ def fetch_initial_candles():
         print("⚠️ Binance fetch failed:", e)
     seed_manual_candles()
 
+def get_status(EntryCount: int) -> str:
+    # Pattern: 1-entry, 2-exit, 3-exit, repeat
+    cycle = ["entry", "exit", "exit"]
+    return cycle[(EntryCount - 1) % 3]
+
 def send_webhook(trigger_time_iso: str, entry_price: float, side: str):
     global EntryCount, LastSide, status
     secret = "gajraj09"
     quantity = 1.8
 
-    if EntryCount % 2 == 1:
-        status = "entry"
-    else:
-        status = "exit"
-    if EntryCount % 3 == 0:
-        status = "exit"
+    # if EntryCount % 2 == 1:
+    #     status = "entry"
+    # else:
+    #     status = "exit"
+    # if EntryCount % 3 == 0:
+    #     status = "exit"
+    status = get_status(EntryCount)
 
     print(f"[WEBHOOK] {trigger_time_iso} | {side} | Entry: {entry_price} | {SYMBOL.upper()} | status: {status} | qty: {quantity}")
     try:
@@ -150,6 +156,8 @@ def recompute_bounds_on_close():
     _bounds_candle_ts = window["time"].iloc[-1]
     _triggered_window_id = None
     print(f"📊 Bounds recomputed: Upper={upper_bound}, Lower={lower_bound}")
+
+
 
 def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
     global alerts, _triggered_window_id, EntryCount, LastSide, status
