@@ -42,7 +42,6 @@ status = None
 # Manual Seed Data
 # ==========================
 manual_candles = [
-    ("04:20:00", 3.0482, 3.0514, 3.0469, 3.0482),
     ("04:25:00", 3.0483, 3.0491, 3.0442, 3.0442),
     ("04:30:00", 3.0446, 3.0473, 3.0413, 3.0439),
     ("04:35:00", 3.0438, 3.0494, 3.0415, 3.0431),
@@ -51,6 +50,7 @@ manual_candles = [
     ("04:50:00", 3.0426, 3.0483, 3.0426, 3.0483),
     ("04:55:00", 3.0482, 3.0508, 3.0471, 3.0505),
     ("05:00:00", 3.0507, 3.0507, 3.0467, 3.0482),
+    ("05:05:00", 3.0486, 3.0502, 3.0450, 3.0500),
 ]
 
 # ==========================
@@ -293,7 +293,7 @@ if __name__ == "__main__":
     threading.Thread(target=run_ws, daemon=True).start()
     # threading.Thread(target=ping_loop, daemon=True).start()
     port = int(os.environ.get("PORT", 8050))
-    app.run_server(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=False)
 
 
 # import os
