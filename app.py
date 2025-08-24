@@ -16,7 +16,7 @@ from dash.dependencies import Input, Output
 # ==========================
 SYMBOL = "xrpusdc"
 INTERVAL = "5m"
-CANDLE_LIMIT = 10
+CANDLE_LIMIT = 50        # fetch more history for clarity
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "http://localhost:5000/webhook")
 
 LENGTH = 5  # last closed candles for bounds
@@ -59,30 +59,10 @@ def fmt_price(p):
         return f"{p:.8f}"
 
 # ==========================
-# Helpers
+# Historical Fetch
 # ==========================
-# def fetch_initial_candles():
-#     global candles, live_price, last_valid_price
-#     url = f"https://fapi.binance.com/fapi/v1/klines?symbol={SYMBOL.upper()}&interval={INTERVAL}&limit={CANDLE_LIMIT}"
-#     r = requests.get(url, timeout=10)
-#     r.raise_for_status()
-#     data = r.json()
-
-#     rows = []
-#     for k in data:
-#         rows.append({
-#             "time": datetime.fromtimestamp(k[0] / 1000, tz=timezone.utc),
-#             "Open": float(k[1]),
-#             "High": float(k[2]),
-#             "Low": float(k[3]),
-#             "Close": float(k[4]),
-#         })
-#     candles = pd.DataFrame(rows)
-#     if not candles.empty:
-#         live_price = float(candles["Close"].iloc[-1])
-#         last_valid_price = live_price if is_valid_price(live_price) else None
-
 def fetch_initial_candles(retries=5, delay=2):
+    """Fetch historical candles before starting WebSocket"""
     global candles, live_price, last_valid_price
     url = f"https://fapi.binance.com/fapi/v1/klines?symbol={SYMBOL.upper()}&interval={INTERVAL}&limit={CANDLE_LIMIT}"
     for attempt in range(retries):
@@ -112,35 +92,9 @@ def fetch_initial_candles(retries=5, delay=2):
             time.sleep(delay)
     print("❌ Could not fetch candles after retries")
 
-
-def send_webhook(trigger_time_iso: str, entry_price: float, side: str):
-    global EntryCount, LastSide, status
-
-    secret = "gajraj09"
-    quantity = 1.8
-
-    if EntryCount % 2 == 1:
-        status = "entry"
-    else:
-        status = "exit"
-    
-    if EntryCount % 3 == 0:
-        status = "exit"
-
-    print(f"[WEBHOOK] {trigger_time_iso} | {side} | Entry: {entry_price} | symbol: {SYMBOL.upper()} | status: {status} | QUANTITY: {quantity}")
-    try:
-        payload = {
-            "symbol": SYMBOL.upper(),
-            "side": side,
-            "quantity": quantity,
-            "price": entry_price,
-            "status": status,
-            "secret": secret
-        }
-        requests.post(WEBHOOK_URL, json=payload, timeout=5)
-    except Exception as e:
-        print("Webhook error:", e)
-
+# ==========================
+# Bounds Computation
+# ==========================
 def recompute_bounds_on_close():
     global upper_bound, lower_bound, _bounds_candle_ts, _triggered_window_id
     if len(candles) < LENGTH:
@@ -160,52 +114,10 @@ def recompute_bounds_on_close():
     lower_bound = float(lows.min())
     _bounds_candle_ts = window["time"].iloc[-1]
     _triggered_window_id = None
-
-def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
-    global alerts, _triggered_window_id, status, EntryCount, LastSide
-    if not (is_valid_price(trade_price) and upper_bound is not None and lower_bound is not None and _bounds_candle_ts):
-        return
-    if _triggered_window_id == _bounds_candle_ts:
-        return
-
-    trigger_time = datetime.fromtimestamp(trade_ts_ms / 1000, tz=timezone(timedelta(hours=5, minutes=30)))
-    trigger_time_iso = trigger_time.isoformat().replace("+00:00", "Z")
-
-    if trade_price >= upper_bound:
-        side = "buy"
-        if EntryCount == 0 and LastSide != side:
-            EntryCount += 1
-            LastSide = side
-        elif EntryCount != 0 and LastSide == side:
-            EntryCount += 1
-            LastSide = side
-        elif EntryCount != 0 and LastSide != side:
-            EntryCount = 1
-            LastSide = side
-        entry = upper_bound
-        send_webhook(trigger_time_iso, entry, side)
-        msg = f"LONG breakout Buy | {status}: {fmt_price(entry)} | Live {fmt_price(trade_price)} | Trigger {trigger_time_iso}"
-        alerts.append(msg); alerts[:] = alerts[-50:]
-        _triggered_window_id = _bounds_candle_ts
-    elif trade_price <= lower_bound:
-        side = "sell"
-        if EntryCount == 0 and LastSide != side:
-            EntryCount += 1
-            LastSide = side
-        elif EntryCount != 0 and LastSide == side:
-            EntryCount += 1
-            LastSide = side
-        elif EntryCount != 0 and LastSide != side:
-            EntryCount = 1
-            LastSide = side
-        entry = lower_bound
-        send_webhook(trigger_time_iso, entry, side)
-        msg = f"SHORT breakout Sell | {status}: {fmt_price(entry)} | Live {fmt_price(trade_price)} | Trigger {trigger_time_iso}"
-        alerts.append(msg); alerts[:] = alerts[-50:]
-        _triggered_window_id = _bounds_candle_ts
+    print(f"📊 Bounds recomputed: Upper={upper_bound}, Lower={lower_bound}")
 
 # ==========================
-# WebSocket
+# WebSocket Handlers
 # ==========================
 def on_message(ws, message):
     global candles, live_price, last_valid_price
@@ -224,31 +136,19 @@ def on_message(ws, message):
                 live_price = c
 
             if candles.empty or candles.iloc[-1]["time"] != ts_dt:
-                open_val = o if is_valid_price(o) else (last_valid_price if last_valid_price is not None else None)
-                if open_val is None:
-                    return
-                high_val = h if is_valid_price(h) else open_val
-                low_val = l if is_valid_price(l) else open_val
-                close_val = c if is_valid_price(c) else open_val
-
                 new_row = {
                     "time": ts_dt,
-                    "Open": open_val,
-                    "High": max(high_val, open_val),
-                    "Low": min(low_val, open_val),
-                    "Close": close_val
+                    "Open": o,
+                    "High": h,
+                    "Low": l,
+                    "Close": c
                 }
                 candles = pd.concat([candles, pd.DataFrame([new_row])], ignore_index=True)
             else:
                 idx = candles.index[-1]
-                if is_valid_price(h):
-                    candles.at[idx, "High"] = max(candles.at[idx, "High"], h)
-                if is_valid_price(l):
-                    candles.at[idx, "Low"] = min(candles.at[idx, "Low"], l)
-                if is_valid_price(c):
-                    candles.at[idx, "Close"] = c
-                    live_price = c
-                    last_valid_price = c
+                candles.at[idx, "High"] = max(candles.at[idx, "High"], h)
+                candles.at[idx, "Low"] = min(candles.at[idx, "Low"], l)
+                candles.at[idx, "Close"] = c
 
             if len(candles) > CANDLE_LIMIT:
                 candles = candles.tail(CANDLE_LIMIT).reset_index(drop=True)
@@ -256,25 +156,14 @@ def on_message(ws, message):
             if kline["x"]:
                 recompute_bounds_on_close()
 
-        elif stream and "trade" in stream:
-            trade_price_raw = payload.get("p")
-            if not is_valid_price(trade_price_raw):
-                return
-            trade_price = float(trade_price_raw)
-            live_price = trade_price
-            last_valid_price = trade_price
-
-            if not candles.empty:
-                idx = candles.index[-1]
-                candles.at[idx, "Close"] = trade_price
-                candles.at[idx, "High"] = max(candles.at[idx, "High"], trade_price)
-                candles.at[idx, "Low"] = min(candles.at[idx, "Low"], trade_price)
-
-            trade_ts_ms = int(payload.get("T") or payload.get("E") or time.time() * 1000)
-            try_trigger_on_trade(trade_price, trade_ts_ms)
-
     except Exception as e:
         print("on_message error:", e)
+
+def on_open(ws):
+    print("WebSocket connected")
+    params = [f"{SYMBOL}@kline_{INTERVAL}", f"{SYMBOL}@trade"]
+    msg = {"method": "SUBSCRIBE", "params": params, "id": 1}
+    ws.send(json.dumps(msg))
 
 def on_error(ws, error):
     print("WebSocket error:", error)
@@ -283,12 +172,6 @@ def on_close(ws, code, msg):
     print("WebSocket closed", code, msg)
     time.sleep(2)
     threading.Thread(target=run_ws, daemon=True).start()
-
-def on_open(ws):
-    print("WebSocket connected")
-    params = [f"{SYMBOL}@kline_{INTERVAL}", f"{SYMBOL}@trade"]
-    msg = {"method": "SUBSCRIBE", "params": params, "id": 1}
-    ws.send(json.dumps(msg))
 
 def run_ws():
     url = "wss://fstream.binance.com/stream"
@@ -305,38 +188,33 @@ def run_ws():
 # Dash App
 # ==========================
 app = dash.Dash(__name__)
-server = app.server  # expose Flask server for Render
+server = app.server  # expose Flask server
 
 app.layout = html.Div([
     html.H1(f"{SYMBOL.upper()} Live Prices & Last {CANDLE_LIMIT} Candles"),
     html.H2(id="live-price", style={"color": "black"}),
     html.Div(id="ohlc-values"),
     html.Div(id="bounds", style={"marginTop": "8px", "color": "#9ad"}),
-    html.H3("Strategy Alerts"),
-    html.Ul(id="strategy-alerts"),
-    dcc.Interval(id="interval", interval=1000, n_intervals=0)  # 1s refresh
+    dcc.Interval(id="interval", interval=1000, n_intervals=0)  # refresh
 ])
 
 @app.callback(
     [Output("live-price", "children"),
      Output("ohlc-values", "children"),
-     Output("strategy-alerts", "children"),
      Output("bounds", "children")],
     [Input("interval", "n_intervals")]
 )
 def update_display(_):
     if len(candles) == 0:
-        return "Live Price: --", "OHLC: --", [], "Bounds: --"
+        return "Live Price: --", "OHLC: --", "Bounds: --"
 
     lp = f"Live Price: {fmt_price(live_price)}"
 
     ohlc_html = []
-    for idx, row in candles.iterrows():
+    for _, row in candles.iterrows():
         ts_str = row['time'].strftime("%H:%M:%S")
         text = f"{ts_str} → O:{fmt_price(row['Open'])}, H:{fmt_price(row['High'])}, L:{fmt_price(row['Low'])}, C:{fmt_price(row['Close'])}"
         ohlc_html.append(html.Div(text))
-
-    alerts_html = [html.Li(a) for a in alerts[-10:]]
 
     if upper_bound is not None and lower_bound is not None and _bounds_candle_ts is not None:
         btxt = (f"Bounds[{LENGTH}] → Upper {fmt_price(upper_bound)}, Lower {fmt_price(lower_bound)} "
@@ -344,17 +222,13 @@ def update_display(_):
     else:
         btxt = "Bounds: waiting for enough closed candles..."
 
-    return lp, ohlc_html, alerts_html, btxt
+    return lp, ohlc_html, btxt
 
 # ==========================
 # Main
 # ==========================
 if __name__ == "__main__":
-    try:
-        fetch_initial_candles()
-    except Exception as e:
-        print("Initial fetch failed:", e)
-
+    fetch_initial_candles()   # ✅ Load historical before anything
     if len(candles) >= LENGTH:
         recompute_bounds_on_close()
 
@@ -362,6 +236,7 @@ if __name__ == "__main__":
 
     port = int(os.environ.get("PORT", 8050))
     app.run(host="0.0.0.0", port=port, debug=False)
+
 
 
 # import os
