@@ -42,6 +42,7 @@ _triggered_window_id = None
 
 EntryCount = 0
 LastSide = None
+LastLastSide = "buy"
 status = None
 
 # Order Filling data
@@ -97,11 +98,17 @@ def fetch_initial_candles():
 def get_status(EntryCount: int) -> str:
     return "entry" if EntryCount % 2 == 1 else "exit"
 
-def calculate_pnl(entry_price: float, closing_price: float) -> float:
-    return (closing_price - entry_price) * 1.8
+def calculate_pnl(entry_price: float, closing_price: float, side: str) -> float:
+    quantity = 1.8  # fixed quantity
+    if side == "buy":
+        return (closing_price - entry_price) * quantity
+    elif side == "sell":
+        return (entry_price - closing_price) * quantity
+    else:
+        return 0.0
 
 def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str):
-    global EntryCount, LastSide, status, entryprice, panl, initail_balance, fillcheck, totaltradecount, unfilledpnl
+    global EntryCount, LastSide, status, entryprice, panl, initail_balance, fillcheck, totaltradecount, unfilledpnl, LastLastSide
 
     secret = "gajraj09"
     quantity = 1.8
@@ -113,7 +120,7 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str):
         if entryprice is None:
             print("[WEBHOOK] Exit requested but no stored entryprice; ignoring pnl update.")
         else:
-            pnl = calculate_pnl(entryprice, entry_price_in)
+            pnl = calculate_pnl(entryprice, entry_price_in, LastSide)
             if fillcheck == 0:
                 initail_balance += pnl
             panl += pnl
@@ -123,7 +130,7 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str):
         fillcheck = 0
     else:  # entry
         if entryprice is not None:
-            pnl = calculate_pnl(entryprice, entry_price_in)
+            pnl = calculate_pnl(entryprice, entry_price_in, LastSide)
             if fillcheck == 0:
                 initail_balance += pnl
             panl += pnl
@@ -132,6 +139,7 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str):
         entryprice = entry_price_in
         totaltradecount += 1
         fillcheck = 1
+    LastLastSide = LastSide
 
     print(f"[WEBHOOK] {trigger_time_iso} | {side} | Entry/Price: {entry_price_in} | symbol: {SYMBOL.upper()} | status: {status} | QUANTITY: {quantity}")
     try:
