@@ -120,7 +120,7 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str):
         if entryprice is None:
             print("[WEBHOOK] Exit requested but no stored entryprice; ignoring pnl update.")
         else:
-            pnl = calculate_pnl(entryprice, entry_price_in, LastSide)
+            pnl = calculate_pnl(entryprice, entry_price_in, LastLastSide)
             if fillcheck == 0:
                 initail_balance += pnl
             panl += pnl
@@ -130,7 +130,7 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str):
         fillcheck = 0
     else:  # entry
         if entryprice is not None:
-            pnl = calculate_pnl(entryprice, entry_price_in, LastSide)
+            pnl = calculate_pnl(entryprice, entry_price_in, LastLastSide)
             if fillcheck == 0:
                 initail_balance += pnl
             panl += pnl
