@@ -11,9 +11,6 @@ import dash
 from dash import dcc, html
 from dash.dependencies import Input, Output
 
-# ==========================
-# Config
-# ==========================
 SYMBOL = "xrpusdc"       # keep lowercase for websocket streams
 INTERVAL = "3m"
 CANDLE_LIMIT = 10
@@ -34,7 +31,7 @@ live_price = None
 last_valid_price = None
 alerts = []
 
-initail_balance = 5.0   # note: variable name kept as in your code
+initail_balance = 5.0
 entryprice = None
 panl = 0.0
 
@@ -46,6 +43,12 @@ _triggered_window_id = None
 EntryCount = 0
 LastSide = None
 status = None
+
+# Order Filling data
+fillcheck = 0
+fillcount = 0
+totaltradecount = 0
+unfilledpnl = 0.0
 
 # ==========================
 # Utilities
@@ -98,34 +101,37 @@ def calculate_pnl(entry_price: float, closing_price: float) -> float:
     return (closing_price - entry_price) * 1.8
 
 def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str):
-    global EntryCount, LastSide, status, entryprice, panl, initail_balance
+    global EntryCount, LastSide, status, entryprice, panl, initail_balance, fillcheck, totaltradecount, unfilledpnl
 
     secret = "gajraj09"
     quantity = 1.8
     status = get_status(EntryCount)
     
-    pnl = 0.0  # default
+    pnl = 0.0
 
     if status == "exit":
         if entryprice is None:
             print("[WEBHOOK] Exit requested but no stored entryprice; ignoring pnl update.")
         else:
             pnl = calculate_pnl(entryprice, entry_price_in)
-            initail_balance += pnl
+            if fillcheck == 0:
+                initail_balance += pnl
             panl += pnl
-            print(f"[EXIT] Applied PnL {fmt_price(pnl)} to balance.")
         entryprice = None
-
+        if fillcheck == 1:
+            unfilledpnl += pnl
+        fillcheck = 0
     else:  # entry
         if entryprice is not None:
             pnl = calculate_pnl(entryprice, entry_price_in)
-            initail_balance += pnl
+            if fillcheck == 0:
+                initail_balance += pnl
             panl += pnl
-            print(f"[ENTRY-TO-ENTRY] Closed old pos at {fmt_price(entry_price_in)} "
-                  f"PnL {fmt_price(pnl)}; Opening new position.")
         else:
             print(f"[ENTRY] Opening first position at {fmt_price(entry_price_in)}")
         entryprice = entry_price_in
+        totaltradecount += 1
+        fillcheck = 1
 
     print(f"[WEBHOOK] {trigger_time_iso} | {side} | Entry/Price: {entry_price_in} | symbol: {SYMBOL.upper()} | status: {status} | QUANTITY: {quantity}")
     try:
@@ -162,8 +168,34 @@ def recompute_bounds_on_close():
     _bounds_candle_ts = window["time"].iloc[-1]
     _triggered_window_id = None
 
+# ==========================
+# Fillcheck update on every tick
+# ==========================
+def update_fillcheck(trade_price: float):
+    global fillcheck, fillcount, entryprice, LastSide, status, totaltradecount, unfilledpnl
+
+    if entryprice is None or fillcheck == 0:
+        return
+
+    if status == "entry":
+        if LastSide == "buy" and trade_price < entryprice:
+            fillcheck = 0
+            fillcount += 1
+            print(f"[FILL] Buy entry filled at {fmt_price(entryprice)} | Total fills={fillcount}/{totaltradecount}")
+        elif LastSide == "sell" and trade_price > entryprice:
+            fillcheck = 0
+            fillcount += 1
+            print(f"[FILL] Sell entry filled at {fmt_price(entryprice)} | Total fills={fillcount}/{totaltradecount}")
+    elif status == "exit":
+        fillcheck = 0
+        print(f"[FILL] Exit completed at {fmt_price(trade_price)}")
+
+# ==========================
+# Trigger logic
+# ==========================
 def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
     global alerts, _triggered_window_id, status, EntryCount, LastSide
+
     if not (is_valid_price(trade_price) and upper_bound is not None and lower_bound is not None and _bounds_candle_ts):
         return
     if _triggered_window_id == _bounds_candle_ts:
@@ -195,7 +227,7 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
 # WebSocket handlers
 # ==========================
 def on_message(ws, message):
-    global candles, live_price, last_valid_price, initail_balance, panl
+    global candles, live_price, last_valid_price
     try:
         data = json.loads(message)
         stream = data.get("stream")
@@ -257,6 +289,9 @@ def on_message(ws, message):
                 candles.at[idx, "High"] = max(candles.at[idx, "High"], trade_price)
                 candles.at[idx, "Low"] = min(candles.at[idx, "Low"], trade_price)
 
+            # --- Update fillcheck dynamically on every tick ---
+            update_fillcheck(trade_price)
+
             trade_ts_ms = int(payload.get("T") or payload.get("E") or time.time() * 1000)
             try_trigger_on_trade(trade_price, trade_ts_ms)
 
@@ -294,8 +329,11 @@ def run_ws():
 app = dash.Dash(__name__)
 app.layout = html.Div([
     html.H1(f"{SYMBOL.upper()} Live Prices & Last {CANDLE_LIMIT} Candles"),
-    html.H2(id="live-price", style={"color": "black"}),
-    html.H2(id="bal", style={"color": "black"}),
+    html.Div([
+        html.H2(id="live-price", style={"color": "black", "marginRight": "20px"}),
+        html.H2(id="bal", style={"color": "black", "marginRight": "20px"}),
+        html.Div(id="trade-stats", style={"display": "flex", "gap": "20px", "alignItems": "center"})
+    ], style={"display": "flex", "flexDirection": "row", "alignItems": "center"}),
     html.Div(id="ohlc-values"),
     html.Div(id="bounds", style={"marginTop": "8px", "color": "#9ad"}),
     html.H3("Strategy Alerts"),
@@ -306,6 +344,7 @@ app.layout = html.Div([
 @app.callback(
     [Output("live-price", "children"),
      Output("bal", "children"),
+     Output("trade-stats", "children"),
      Output("ohlc-values", "children"),
      Output("strategy-alerts", "children"),
      Output("bounds", "children")],
@@ -318,11 +357,19 @@ def update_display(_):
             f"Balance: {fmt_price(initail_balance)}",
             [],
             [],
+            [],
             "Bounds: waiting for enough closed candles..."
         )
 
     lp = f"Live Price: {fmt_price(live_price)}"
     bal = f"Balance: {fmt_price(initail_balance)}"
+
+    stats_html = [
+        html.Div(f"FillCheck: {fillcheck}"),
+        html.Div(f"FillCount: {fillcount}"),
+        html.Div(f"TotalTrades: {totaltradecount}"),
+        html.Div(f"UnfilledPnL: {fmt_price(unfilledpnl)}")
+    ]
 
     ohlc_html = []
     for idx, row in candles.iterrows():
@@ -338,7 +385,7 @@ def update_display(_):
     else:
         btxt = "Bounds: waiting for enough closed candles..."
 
-    return lp, bal, ohlc_html, alerts_html, btxt
+    return lp, bal, stats_html, ohlc_html, alerts_html, btxt
 
 # ==========================
 # Main (Render compatible)
