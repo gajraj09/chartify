@@ -17,7 +17,7 @@ from dash.dependencies import Input, Output
 SYMBOL = "xrpusdc"       # keep lowercase for websocket streams
 INTERVAL = "3m"
 CANDLE_LIMIT = 10
-WEBHOOK_URL = "/webhook"
+WEBHOOK_URL = "https://www.example.com/webhook"
 
 LENGTH = 3  # last closed candles for bounds
 
