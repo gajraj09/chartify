@@ -10,10 +10,12 @@ import websocket
 import dash
 from dash import dcc, html
 from dash.dependencies import Input, Output
+from flask import Flask, request, jsonify
 
 SYMBOL = "xrpusdc"       # keep lowercase for websocket streams
 INTERVAL = "3m"
 CANDLE_LIMIT = 10
+PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
 WEBHOOK_URL = "https://www.example.com/webhook"
 
 LENGTH = 3  # last closed candles for bounds
@@ -335,6 +337,7 @@ def run_ws():
 # Dash App
 # ==========================
 app = dash.Dash(__name__)
+server = app.server  # expose Flask server for Render/Heroku
 app.layout = html.Div([
     html.H1(f"{SYMBOL.upper()} Live Prices & Last {CANDLE_LIMIT} Candles"),
     html.Div([
@@ -394,6 +397,22 @@ def update_display(_):
         btxt = "Bounds: waiting for enough closed candles..."
 
     return lp, bal, stats_html, ohlc_html, alerts_html, btxt
+
+
+# Keep-alive ping thread
+def keep_alive():
+    """Send a ping to the server itself."""
+    try:
+        print(f"🔄 Pinging {PING_URL}")
+        r = requests.get(PING_URL, timeout=10)
+        print("✅ Ping response:", r.status_code)
+    except Exception as e:
+        print("⚠️ Keep-alive ping failed:", str(e))
+
+@server.route('/ping', methods=['GET'])
+def ping():
+    keep_alive()
+    return jsonify({"status": "alive"}), 200
 
 # ==========================
 # Main (Render compatible)
