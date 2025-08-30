@@ -1,6 +1,8 @@
 import json
+import os
+import time
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone, timedelta
 
 import pandas as pd
 import requests
@@ -12,185 +14,350 @@ from dash.dependencies import Input, Output
 # ==========================
 # Config
 # ==========================
-SYMBOL = "xrpusdc"
+SYMBOL = "xrpusdc"       # keep lowercase for websocket streams
 INTERVAL = "3m"
 CANDLE_LIMIT = 10
 WEBHOOK_URL = "/webhook"
-LENGTH = 5  # last closed candles for bounds
 
+LENGTH = 3  # last closed candles for bounds
+
+# ==========================
 # Timezone (UTC+5:30 Kolkata)
+# ==========================
 KOLKATA_TZ = timezone(timedelta(hours=5, minutes=30))
 
 # ==========================
-# Data
+# Globals
 # ==========================
-candles_df = pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume"])
-trade_trigger_df = pd.DataFrame(columns=["time", "price", "side"])
+candles = pd.DataFrame(columns=["time", "Open", "High", "Low", "Close"])
+live_price = None
+last_valid_price = None
+alerts = []
 
-last_trade = None
-_bounds = None
+initail_balance = 5.0   # note: variable name kept as in your code
+entryprice = None
+panl = 0.0
+
+upper_bound = None
+lower_bound = None
 _bounds_candle_ts = None
+_triggered_window_id = None
+
+EntryCount = 0
+LastSide = None
+status = None
 
 # ==========================
-# Binance Candle Fetcher
+# Utilities
 # ==========================
-def fetch_candles():
-    global candles_df
-    url = f"https://api.binance.com/api/v3/klines?symbol={SYMBOL.upper()}&interval={INTERVAL}&limit={CANDLE_LIMIT}"
-    data = requests.get(url, timeout=10).json()
-    candles_df = pd.DataFrame(
-        [
-            {
-                "time": datetime.fromtimestamp(k[0] / 1000, tz=KOLKATA_TZ),
-                "open": float(k[1]),
-                "high": float(k[2]),
-                "low": float(k[3]),
-                "close": float(k[4]),
-                "volume": float(k[5]),
-            }
-            for k in data
-        ]
-    )
+def is_valid_price(x):
+    try:
+        return float(x) > 0
+    except Exception:
+        return False
+
+def fmt_price(p):
+    if p is None:
+        return "--"
+    ap = abs(p)
+    if ap >= 100:
+        return f"{p:.2f}"
+    elif ap >= 1:
+        return f"{p:.4f}"
+    else:
+        return f"{p:.8f}"
 
 # ==========================
-# WebSocket Handler
+# Helpers
+# ==========================
+def fetch_initial_candles():
+    global candles, live_price, last_valid_price
+    url = f"https://fapi.binance.com/fapi/v1/klines?symbol={SYMBOL.upper()}&interval={INTERVAL}&limit={CANDLE_LIMIT}"
+    r = requests.get(url, timeout=10)
+    r.raise_for_status()
+    data = r.json()
+
+    rows = []
+    for k in data:
+        rows.append({
+            "time": datetime.fromtimestamp(k[0] / 1000, tz=KOLKATA_TZ),
+            "Open": float(k[1]),
+            "High": float(k[2]),
+            "Low": float(k[3]),
+            "Close": float(k[4]),
+        })
+    candles = pd.DataFrame(rows)
+    if not candles.empty:
+        live_price = float(candles["Close"].iloc[-1])
+        last_valid_price = live_price if is_valid_price(live_price) else None
+
+def get_status(EntryCount: int) -> str:
+    return "entry" if EntryCount % 2 == 1 else "exit"
+
+def calculate_pnl(entry_price: float, closing_price: float) -> float:
+    return (closing_price - entry_price) * 1.8
+
+def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str):
+    global EntryCount, LastSide, status, entryprice, panl, initail_balance
+
+    secret = "gajraj09"
+    quantity = 1.8
+    status = get_status(EntryCount)
+    
+    pnl = 0.0  # default
+
+    if status == "exit":
+        if entryprice is None:
+            print("[WEBHOOK] Exit requested but no stored entryprice; ignoring pnl update.")
+        else:
+            pnl = calculate_pnl(entryprice, entry_price_in)
+            initail_balance += pnl
+            panl += pnl
+            print(f"[EXIT] Applied PnL {fmt_price(pnl)} to balance.")
+        entryprice = None
+
+    else:  # entry
+        if entryprice is not None:
+            pnl = calculate_pnl(entryprice, entry_price_in)
+            initail_balance += pnl
+            panl += pnl
+            print(f"[ENTRY-TO-ENTRY] Closed old pos at {fmt_price(entry_price_in)} "
+                  f"PnL {fmt_price(pnl)}; Opening new position.")
+        else:
+            print(f"[ENTRY] Opening first position at {fmt_price(entry_price_in)}")
+        entryprice = entry_price_in
+
+    print(f"[WEBHOOK] {trigger_time_iso} | {side} | Entry/Price: {entry_price_in} | symbol: {SYMBOL.upper()} | status: {status} | QUANTITY: {quantity}")
+    try:
+        payload = {
+            "symbol": SYMBOL.upper(),
+            "side": side,
+            "quantity": quantity,
+            "price": entry_price_in,
+            "status": status,
+            "secret": secret
+        }
+        requests.post(WEBHOOK_URL, json=payload, timeout=5)
+        print("Sent payload:", payload)
+    except Exception as e:
+        print("Webhook error:", e)
+
+def recompute_bounds_on_close():
+    global upper_bound, lower_bound, _bounds_candle_ts, _triggered_window_id
+    if len(candles) < LENGTH:
+        upper_bound = None
+        lower_bound = None
+        _bounds_candle_ts = None
+        _triggered_window_id = None
+        return
+
+    window = candles.tail(LENGTH)
+    highs = window["High"][window["High"] > 0]
+    lows = window["Low"][window["Low"] > 0]
+    if highs.empty or lows.empty:
+        return
+
+    upper_bound = float(highs.max())
+    lower_bound = float(lows.min())
+    _bounds_candle_ts = window["time"].iloc[-1]
+    _triggered_window_id = None
+
+def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
+    global alerts, _triggered_window_id, status, EntryCount, LastSide
+    if not (is_valid_price(trade_price) and upper_bound is not None and lower_bound is not None and _bounds_candle_ts):
+        return
+    if _triggered_window_id == _bounds_candle_ts:
+        return
+
+    trigger_time = datetime.fromtimestamp(trade_ts_ms / 1000, tz=KOLKATA_TZ)
+    trigger_time_iso = trigger_time.isoformat()
+
+    def _process_side(side_name, entry_val, friendly):
+        global EntryCount, LastSide, alerts, _triggered_window_id
+        if EntryCount == 0 or LastSide != side_name:
+            EntryCount = 1
+        else:
+            EntryCount += 1
+        LastSide = side_name
+
+        send_webhook(trigger_time_iso, entry_val, side_name)
+        msg = f"{friendly} | {status}: {fmt_price(entry_val)} | Live {fmt_price(trade_price)} | Trigger {trigger_time_iso}"
+        alerts.append(msg)
+        alerts[:] = alerts[-50:]
+        _triggered_window_id = _bounds_candle_ts
+
+    if trade_price >= upper_bound:
+        _process_side("buy", upper_bound, "LONG breakout Buy")
+    elif trade_price <= lower_bound:
+        _process_side("sell", lower_bound, "SHORT breakout Sell")
+
+# ==========================
+# WebSocket handlers
 # ==========================
 def on_message(ws, message):
-    global candles_df, last_trade, _bounds, _bounds_candle_ts, trade_trigger_df
+    global candles, live_price, last_valid_price, initail_balance, panl
+    try:
+        data = json.loads(message)
+        stream = data.get("stream")
+        payload = data.get("data")
 
-    data = json.loads(message)
+        if stream and "kline" in stream:
+            kline = payload["k"]
+            ts_dt = datetime.fromtimestamp(kline["t"] / 1000, tz=KOLKATA_TZ)
+            o, h, l, c = float(kline["o"]), float(kline["h"]), float(kline["l"]), float(kline["c"])
 
-    # Kline updates
-    if "k" in data:
-        kline = data["k"]
-        ts_dt = datetime.fromtimestamp(kline["t"] / 1000, tz=KOLKATA_TZ)
+            if is_valid_price(c):
+                last_valid_price = c
+                live_price = c
 
-        candles_df.loc[candles_df["time"] == ts_dt, ["open", "high", "low", "close", "volume"]] = [
-            float(kline["o"]),
-            float(kline["h"]),
-            float(kline["l"]),
-            float(kline["c"]),
-            float(kline["v"]),
-        ]
+            if candles.empty or candles.iloc[-1]["time"] != ts_dt:
+                open_val = o if is_valid_price(o) else (last_valid_price if last_valid_price is not None else None)
+                if open_val is None:
+                    return
+                high_val = h if is_valid_price(h) else open_val
+                low_val = l if is_valid_price(l) else open_val
+                close_val = c if is_valid_price(c) else open_val
 
-        if ts_dt not in candles_df["time"].values:
-            new_row = {
-                "time": ts_dt,
-                "open": float(kline["o"]),
-                "high": float(kline["h"]),
-                "low": float(kline["l"]),
-                "close": float(kline["c"]),
-                "volume": float(kline["v"]),
-            }
-            candles_df = pd.concat([candles_df, pd.DataFrame([new_row])])
-            candles_df = candles_df.tail(CANDLE_LIMIT)
-
-            if len(candles_df) >= LENGTH:
-                recent = candles_df.tail(LENGTH)
-                _bounds = {
-                    "high": recent["high"].max(),
-                    "low": recent["low"].min(),
+                new_row = {
+                    "time": ts_dt,
+                    "Open": open_val,
+                    "High": max(high_val, open_val),
+                    "Low": min(low_val, open_val),
+                    "Close": close_val
                 }
-                _bounds_candle_ts = ts_dt
+                candles = pd.concat([candles, pd.DataFrame([new_row])], ignore_index=True)
+            else:
+                idx = candles.index[-1]
+                if is_valid_price(h):
+                    candles.at[idx, "High"] = max(candles.at[idx, "High"], h)
+                if is_valid_price(l):
+                    candles.at[idx, "Low"] = min(candles.at[idx, "Low"], l)
+                if is_valid_price(c):
+                    candles.at[idx, "Close"] = c
+                    live_price = c
+                    last_valid_price = c
 
-    # Trade trigger (mocked as "trade" in data)
-    if "trade" in data:
-        trade_data = data["trade"]
-        price = float(trade_data["p"])
-        side = trade_data["s"]
-        ts = trade_data["T"]
-        trigger_time = datetime.fromtimestamp(ts / 1000, tz=KOLKATA_TZ)
-        trigger_time_iso = trigger_time.isoformat()
+            if len(candles) > CANDLE_LIMIT:
+                candles = candles.tail(CANDLE_LIMIT).reset_index(drop=True)
 
-        last_trade = {"price": price, "side": side, "time": trigger_time_iso}
+            if kline.get("x"):
+                recompute_bounds_on_close()
 
-        new_row = pd.DataFrame(
-            [{"time": trigger_time, "price": price, "side": side}]
-        )
-        trade_trigger_df = pd.concat([trade_trigger_df, new_row], ignore_index=True)
+        elif stream and "trade" in stream:
+            trade_price_raw = payload.get("p")
+            if not is_valid_price(trade_price_raw):
+                return
+            trade_price = float(trade_price_raw)
+            live_price = trade_price
+            last_valid_price = trade_price
+
+            if not candles.empty:
+                idx = candles.index[-1]
+                candles.at[idx, "Close"] = trade_price
+                candles.at[idx, "High"] = max(candles.at[idx, "High"], trade_price)
+                candles.at[idx, "Low"] = min(candles.at[idx, "Low"], trade_price)
+
+            trade_ts_ms = int(payload.get("T") or payload.get("E") or time.time() * 1000)
+            try_trigger_on_trade(trade_price, trade_ts_ms)
+
+    except Exception as e:
+        print("on_message error:", e)
 
 def on_error(ws, error):
     print("WebSocket error:", error)
 
-def on_close(ws, close_status_code, close_msg):
-    print("WebSocket closed")
+def on_close(ws, code, msg):
+    print("WebSocket closed", code, msg)
+    time.sleep(2)
+    threading.Thread(target=run_ws, daemon=True).start()
 
 def on_open(ws):
-    payload = {
-        "method": "SUBSCRIBE",
-        "params": [f"{SYMBOL.lower()}@kline_{INTERVAL}"],
-        "id": 1,
-    }
-    ws.send(json.dumps(payload))
+    print("WebSocket connected")
+    params = [f"{SYMBOL}@kline_{INTERVAL}", f"{SYMBOL}@trade"]
+    msg = {"method": "SUBSCRIBE", "params": params, "id": 1}
+    ws.send(json.dumps(msg))
 
 def run_ws():
+    url = "wss://fstream.binance.com/stream"
     ws = websocket.WebSocketApp(
-        "wss://stream.binance.com:9443/ws",
+        url,
+        on_open=on_open,
         on_message=on_message,
         on_error=on_error,
-        on_close=on_close,
-        on_open=on_open,
+        on_close=on_close
     )
-    ws.run_forever()
-
-# Start WebSocket in background
-fetch_candles()
-threading.Thread(target=run_ws, daemon=True).start()
+    ws.run_forever(ping_interval=20, ping_timeout=10)
 
 # ==========================
 # Dash App
 # ==========================
 app = dash.Dash(__name__)
-server = app.server  # expose for Render
-
-app.layout = html.Div(
-    [
-        html.H1("Crypto Dashboard", style={"textAlign": "center"}),
-        dcc.Graph(id="candlestick-chart"),
-        html.Div(id="last-trade"),
-        dcc.Interval(id="interval", interval=5 * 1000, n_intervals=0),
-    ]
-)
+app.layout = html.Div([
+    html.H1(f"{SYMBOL.upper()} Live Prices & Last {CANDLE_LIMIT} Candles"),
+    html.H2(id="live-price", style={"color": "black"}),
+    html.H2(id="bal", style={"color": "black"}),
+    html.Div(id="ohlc-values"),
+    html.Div(id="bounds", style={"marginTop": "8px", "color": "#9ad"}),
+    html.H3("Strategy Alerts"),
+    html.Ul(id="strategy-alerts"),
+    dcc.Interval(id="interval", interval=500, n_intervals=0)  # update every 0.5s
+])
 
 @app.callback(
-    [Output("candlestick-chart", "figure"), Output("last-trade", "children")],
-    [Input("interval", "n_intervals")],
+    [Output("live-price", "children"),
+     Output("bal", "children"),
+     Output("ohlc-values", "children"),
+     Output("strategy-alerts", "children"),
+     Output("bounds", "children")],
+    [Input("interval", "n_intervals")]
 )
-def update_chart(_):
-    if candles_df.empty:
-        return dash.no_update, dash.no_update
-
-    fig = {
-        "data": [
-            {
-                "x": candles_df["time"],
-                "open": candles_df["open"],
-                "high": candles_df["high"],
-                "low": candles_df["low"],
-                "close": candles_df["close"],
-                "type": "candlestick",
-                "name": "Candles",
-            }
-        ],
-        "layout": {"title": f"{SYMBOL.upper()} {INTERVAL}"},
-    }
-
-    if _bounds is not None:
-        fig["data"].append(
-            {"x": candles_df["time"], "y": [_bounds["high"]] * len(candles_df), "type": "line", "name": "High Bound"}
-        )
-        fig["data"].append(
-            {"x": candles_df["time"], "y": [_bounds["low"]] * len(candles_df), "type": "line", "name": "Low Bound"}
+def update_display(_):
+    if len(candles) == 0:
+        return (
+            "Live Price: --",
+            f"Balance: {fmt_price(initail_balance)}",
+            [],
+            [],
+            "Bounds: waiting for enough closed candles..."
         )
 
-    trade_text = "No trades yet"
-    if last_trade:
-        trade_text = f"Last Trade: {last_trade['side']} @ {last_trade['price']} | {last_trade['time']}"
+    lp = f"Live Price: {fmt_price(live_price)}"
+    bal = f"Balance: {fmt_price(initail_balance)}"
 
-    return fig, trade_text
+    ohlc_html = []
+    for idx, row in candles.iterrows():
+        ts_str = row['time'].astimezone(KOLKATA_TZ).strftime("%H:%M:%S")
+        text = f"{ts_str} → O:{fmt_price(row['Open'])}, H:{fmt_price(row['High'])}, L:{fmt_price(row['Low'])}, C:{fmt_price(row['Close'])}"
+        ohlc_html.append(html.Div(text))
 
+    alerts_html = [html.Li(a) for a in alerts[-10:]]
+
+    if upper_bound is not None and lower_bound is not None and _bounds_candle_ts is not None:
+        btxt = (f"Bounds[{LENGTH}] → Upper {fmt_price(upper_bound)}, Lower {fmt_price(lower_bound)} "
+                f"(from candle {_bounds_candle_ts.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')})")
+    else:
+        btxt = "Bounds: waiting for enough closed candles..."
+
+    return lp, bal, ohlc_html, alerts_html, btxt
+
+# ==========================
+# Main (Render compatible)
+# ==========================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000, debug=False)
+    try:
+        fetch_initial_candles()
+    except Exception as e:
+        print("Initial fetch failed:", e)
+
+    if len(candles) >= LENGTH:
+        recompute_bounds_on_close()
+
+    t = threading.Thread(target=run_ws, daemon=True)
+    t.start()
+
+    port = int(os.environ.get("PORT", 10000))  # Render sets PORT
+    app.run(host="0.0.0.0", port=port, debug=False)
+
 
 
 
