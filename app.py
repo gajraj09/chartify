@@ -37,7 +37,7 @@ last_valid_price = None
 alerts = []
 
 # Strategy / trade state (kept from your other code)
-initial_balance = 10.0   # fixed spelling
+initial_balance = 50.0   # fixed spelling
 entryprice = None
 panl = 0.0
 
@@ -412,6 +412,7 @@ def run_ws():
 # Dash App (display both 5m and even 10m candles, bounds, alerts and stats)
 # ==========================
 app = dash.Dash(__name__)
+server = app.server  # expose Flask server for Render/Heroku
 app.layout = html.Div([
     html.H1(f"{SYMBOL.upper()} Live Prices & Derived Even 10-min Strategy"),
     html.Div([
