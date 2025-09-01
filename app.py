@@ -16,7 +16,7 @@ from dash.dependencies import Input, Output
 SYMBOL = "xrpusdc"  # lowercase for websocket streams
 INTERVAL = "5m"     # 5-min candles (source)
 CANDLE_LIMIT = 10   # keep enough 5m candles so we can build 10m candles
-
+PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
 WEBHOOK_URL = "https://www.example.com/webhook"
 LENGTH = 1  # last closed 10-min candles for bounds
 
