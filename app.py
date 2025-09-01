@@ -413,22 +413,6 @@ def run_ws():
 # ==========================
 app = dash.Dash(__name__)
 server = app.server  # expose Flask server for Render/Heroku
-# app.layout = html.Div([
-#     html.H1(f"{SYMBOL.upper()} Live Prices & Derived Even 10-min Strategy"),
-#     html.Div([
-#         html.H2(id="live-price", style={"color": "black", "marginRight": "20px"}),
-#         html.H2(id="bal", style={"color": "black", "marginRight": "20px"}),
-#         html.Div(id="trade-stats", style={"display": "flex", "gap": "20px", "alignItems": "center"})
-#     ], style={"display": "flex", "flexDirection": "row", "alignItems": "center"}),
-#     html.Div(id="ohlc-values"),
-#     html.H3("Derived Even 10-min Candles"),
-#     html.Div(id="ten-min-ohlc"),
-#     html.Div(id="bounds", style={"marginTop": "8px", "color": "#9ad"}),
-#     html.H3("Strategy Alerts"),
-#     html.Ul(id="strategy-alerts"),
-#     dcc.Interval(id="interval", interval=500, n_intervals=0)  # update every 0.5s
-# ])
-
 app.layout = html.Div([
     html.H1(f"{SYMBOL.upper()} Live Prices & Derived Even 10-min Strategy"),
     html.Div([
@@ -436,91 +420,65 @@ app.layout = html.Div([
         html.H2(id="bal", style={"color": "black", "marginRight": "20px"}),
         html.Div(id="trade-stats", style={"display": "flex", "gap": "20px", "alignItems": "center"})
     ], style={"display": "flex", "flexDirection": "row", "alignItems": "center"}),
-
     html.Div(id="ohlc-values"),
-
     html.H3("Derived Even 10-min Candles"),
     html.Div(id="ten-min-ohlc"),
-
     html.Div(id="bounds", style={"marginTop": "8px", "color": "#9ad"}),
-
     html.H3("Strategy Alerts"),
-    html.Ul(id="strategy-alerts", children=[]),  # ✅ children initialized
-
+    html.Ul(id="strategy-alerts"),
     dcc.Interval(id="interval", interval=500, n_intervals=0)  # update every 0.5s
 ])
 
 
-# @app.callback(
-#     [Output("live-price", "children"),
-#      Output("bal", "children"),
-#      Output("trade-stats", "children"),
-#      Output("ohlc-values", "children"),
-#      Output("strategy-alerts", "children"),
-#      Output("bounds", "children"),
-#      Output("ten-min-ohlc", "children")],
-#     [Input("interval", "n_intervals")]
-# )
+
+
 @app.callback(
-    [
-        Output("live-price", "children"),
-        Output("bal", "children"),
-        Output("trade-stats", "children"),
-        Output("ohlc-values", "children"),
-        Output("strategy-alerts", "children"),   # ✅ matches layout
-        Output("bounds", "children"),
-        Output("ten-min-ohlc", "children")
-    ],
-    Input("interval", "n_intervals")
+    [Output("live-price", "children"),
+     Output("bal", "children"),
+     Output("trade-stats", "children"),
+     Output("ohlc-values", "children"),
+     Output("strategy-alerts", "children"),
+     Output("bounds", "children"),
+     Output("ten-min-ohlc", "children")],
+    [Input("interval", "n_intervals")]
 )
-def update_dashboard(n_intervals):
-    # Example safe returns
-    live_price = "Price: --"
-    balance = "Balance: --"
-    trade_stats = "No trades yet"
-    ohlc_values = "OHLC not ready"
-    alerts = [html.Li("No alerts yet")]   # ✅ proper children list
-    bounds = "Bounds: --"
-    ten_min_candles = "No 10-min candles yet"
 
-    return live_price, balance, trade_stats, ohlc_values, alerts, bounds, ten_min_candles
+def update_display(_):
+    # live price / balance / stats
+    lp = f"Live Price: {fmt_price(live_price)}" if live_price is not None else "Live Price: --"
+    bal = f"Balance: {fmt_price(initial_balance)}"
 
-# def update_display(_):
-#     # live price / balance / stats
-#     lp = f"Live Price: {fmt_price(live_price)}" if live_price is not None else "Live Price: --"
-#     bal = f"Balance: {fmt_price(initial_balance)}"
+    stats_html = [
+        html.Div(f"FillCheck: {fillcheck}"),
+        html.Div(f"FillCount: {fillcount}"),
+        html.Div(f"TotalTrades: {totaltradecount}"),
+        html.Div(f"UnfilledPnL: {fmt_price(unfilledpnl)}")
+    ]
 
-#     stats_html = [
-#         html.Div(f"FillCheck: {fillcheck}"),
-#         html.Div(f"FillCount: {fillcount}"),
-#         html.Div(f"TotalTrades: {totaltradecount}"),
-#         html.Div(f"UnfilledPnL: {fmt_price(unfilledpnl)}")
-#     ]
+    # 5-min candles HTML
+    ohlc_html = []
+    for idx, row in candles.iterrows():
+        ts_str = row['time'].astimezone(KOLKATA_TZ).strftime("%H:%M:%S")
+        text = f"{ts_str} → O:{fmt_price(row['Open'])}, H:{fmt_price(row['High'])}, L:{fmt_price(row['Low'])}, C:{fmt_price(row['Close'])}"
+        ohlc_html.append(html.Div(text))
 
-#     # 5-min candles HTML
-#     ohlc_html = []
-#     for idx, row in candles.iterrows():
-#         ts_str = row['time'].astimezone(KOLKATA_TZ).strftime("%H:%M:%S")
-#         text = f"{ts_str} → O:{fmt_price(row['Open'])}, H:{fmt_price(row['High'])}, L:{fmt_price(row['Low'])}, C:{fmt_price(row['Close'])}"
-#         ohlc_html.append(html.Div(text))
+    # 10-min candles HTML
+    ten_min_html = []
+    for idx, row in ten_min_candles.iterrows():
+        ts_str = row['time'].astimezone(KOLKATA_TZ).strftime("%H:%M:%S")
+        text = f"{ts_str} → O:{fmt_price(row['Open'])}, H:{fmt_price(row['High'])}, L:{fmt_price(row['Low'])}, C:{fmt_price(row['Close'])}"
+        ten_min_html.append(html.Div(text))
 
-#     # 10-min candles HTML
-#     ten_min_html = []
-#     for idx, row in ten_min_candles.iterrows():
-#         ts_str = row['time'].astimezone(KOLKATA_TZ).strftime("%H:%M:%S")
-#         text = f"{ts_str} → O:{fmt_price(row['Open'])}, H:{fmt_price(row['High'])}, L:{fmt_price(row['Low'])}, C:{fmt_price(row['Close'])}"
-#         ten_min_html.append(html.Div(text))
+    # alerts
+    alerts_html = [html.Li(a) for a in alerts[-50:]]
 
-#     # alerts
-#     alerts_html = [html.Li(a) for a in alerts[-50:]]
+    if upper_bound is not None and lower_bound is not None and _bounds_candle_ts is not None:
+        btxt = (f"Bounds[{LENGTH}] → Upper {fmt_price(upper_bound)}, Lower {fmt_price(lower_bound)} "
+                f"(from 10-min candle {_bounds_candle_ts.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')})")
+    else:
+        btxt = "Bounds: waiting for enough closed 10-min candles..."
 
-#     if upper_bound is not None and lower_bound is not None and _bounds_candle_ts is not None:
-#         btxt = (f"Bounds[{LENGTH}] → Upper {fmt_price(upper_bound)}, Lower {fmt_price(lower_bound)} "
-#                 f"(from 10-min candle {_bounds_candle_ts.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')})")
-#     else:
-#         btxt = "Bounds: waiting for enough closed 10-min candles..."
-
-#     return lp, bal, stats_html, ohlc_html, alerts_html, btxt, ten_min_html
+    return lp, bal, stats_html, ohlc_html, alerts_html, btxt, ten_min_html
 
 
 # Keep-alive ping thread
