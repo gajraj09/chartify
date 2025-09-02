@@ -32,7 +32,7 @@ COLLECTION_STATE = "bot_state"
 # ==========================
 # Store all candle timestamps in UTC. Convert to Kolkata only for display.
 KOLKATA_TZ = timezone(timedelta(hours=5, minutes=30))
-STORE_TZ = timezone.utc
+STORE_TZ = timezone(timedelta(hours=5, minutes=30))
 
 # ==========================
 # Globals
