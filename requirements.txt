@@ -6,3 +6,4 @@ websocket-client
 gunicorn
 flask
 pymongo
+dnspython
