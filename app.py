@@ -114,7 +114,7 @@ try:
     mongo_client = MongoClient(
         MONGO_URI,
         tls=True,  # enforce TLS
-        tlsAllowInvalidCertificates=False,
+        tlsAllowInvalidCertificates=True,
         serverSelectionTimeoutMS=10000  # 10s timeout
     )
     db = mongo_client[DB_NAME]
