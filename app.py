@@ -65,9 +65,7 @@ unfilledpnl = 0.0
 # ==========================
 # MONGO DB
 # ==========================
-MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
-DB_NAME = "trading_bot"
-COLLECTION_STATE = "bot_state"
+
 
 # ==========================
 # Timezones
