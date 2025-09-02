@@ -12,44 +12,47 @@ from dash import dcc, html
 from dash.dependencies import Input, Output
 from flask import Flask, request, jsonify
 
+# ==========================
+# Config
+# ==========================
 SYMBOL = "xrpusdc"       # keep lowercase for websocket streams
 INTERVAL = "15m"
 CANDLE_LIMIT = 10
 PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
-WEBHOOK_URL = "https://www.example.com/webhook"
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://www.example.com/webhook")
 
-LENGTH = 1  # last closed candles for bounds
+LENGTH = 2  # number of LAST CLOSED candles to compute bounds
 
 # ==========================
-# Timezone (UTC+5:30 Kolkata)
+# Timezones
 # ==========================
+# Store all candle timestamps in UTC. Convert to Kolkata only for display.
 KOLKATA_TZ = timezone(timedelta(hours=5, minutes=30))
+STORE_TZ = timezone.utc
 
 # ==========================
 # Globals
 # ==========================
-candles = pd.DataFrame(columns=["time", "Open", "High", "Low", "Close"])
+candles = pd.DataFrame(columns=["time", "Open", "High", "Low", "Close"])  # 'time' is UTC-aware
 live_price = None
 last_valid_price = None
 alerts = []
 
-initail_balance = 50.0
+initial_balance = 10.0
 entryprice = None
-panl = 0.0
+running_pnl = 0.0
 
 upper_bound = None
 lower_bound = None
-_bounds_candle_ts = None
+_bounds_candle_ts = None  # UTC datetime of the candle used to compute bounds
 _triggered_window_id = None
 
 EntryCount = 0
 LastSide = None
 LastLastSide = "buy"
 status = None
-# Avoid Exit candle
-candle_active = 0
 
-# Order Filling data
+# Order filling data
 fillcheck = 0
 fillcount = 0
 totaltradecount = 0
@@ -58,11 +61,13 @@ unfilledpnl = 0.0
 # ==========================
 # Utilities
 # ==========================
+
 def is_valid_price(x):
     try:
         return float(x) > 0
     except Exception:
         return False
+
 
 def fmt_price(p):
     if p is None:
@@ -75,32 +80,38 @@ def fmt_price(p):
     else:
         return f"{p:.8f}"
 
+
 # ==========================
 # Helpers
 # ==========================
+
 def fetch_initial_candles():
+    """Fetch last CANDLE_LIMIT klines from Binance Futures API and seed the DF.
+    Ensures timestamps are stored in UTC (STORE_TZ)."""
     global candles, live_price, last_valid_price
-    url = f"https://fapi.binance.com/fapi/v1/klines?symbol={SYMBOL.upper()}&interval={INTERVAL}&limit={CANDLE_LIMIT}"
+    url = (
+        f"https://fapi.binance.com/fapi/v1/klines?symbol={SYMBOL.upper()}&interval={INTERVAL}&limit={CANDLE_LIMIT}"
+    )
     r = requests.get(url, timeout=10)
     r.raise_for_status()
     data = r.json()
 
     rows = []
     for k in data:
-        rows.append({
-            "time": datetime.fromtimestamp(k[0] / 1000, tz=KOLKATA_TZ),
-            "Open": float(k[1]),
-            "High": float(k[2]),
-            "Low": float(k[3]),
-            "Close": float(k[4]),
-        })
+        rows.append(
+            {
+                "time": datetime.fromtimestamp(k[0] / 1000, tz=STORE_TZ),  # UTC
+                "Open": float(k[1]),
+                "High": float(k[2]),
+                "Low": float(k[3]),
+                "Close": float(k[4]),
+            }
+        )
     candles = pd.DataFrame(rows)
     if not candles.empty:
         live_price = float(candles["Close"].iloc[-1])
         last_valid_price = live_price if is_valid_price(live_price) else None
 
-def get_status(EntryCount: int) -> str:
-    return "entry" if EntryCount % 2 == 1 else "exit"
 
 def calculate_pnl(entry_price: float, closing_price: float, side: str) -> float:
     quantity = 10  # fixed quantity
@@ -111,32 +122,36 @@ def calculate_pnl(entry_price: float, closing_price: float, side: str) -> float:
     else:
         return 0.0
 
-def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str):
-    global EntryCount, LastSide, status, entryprice, panl, initail_balance, fillcheck, totaltradecount, unfilledpnl, LastLastSide,candle_active
+
+def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status_fun: str):
+    global EntryCount, LastSide, status, entryprice, running_pnl, initial_balance
+    global fillcheck, totaltradecount, unfilledpnl, LastLastSide
 
     secret = "gajraj09"
     quantity = 10
-    status = get_status(EntryCount)
-    
+
+    status = status_fun
     pnl = 0.0
 
     if status == "exit":
-        candle_active = 0
         if entryprice is None:
             print("[WEBHOOK] Exit requested but no stored entryprice; ignoring pnl update.")
         else:
             pnl = calculate_pnl(entryprice, entry_price_in, LastLastSide)
             if fillcheck == 0:
-                initail_balance += pnl
-            else: unfilledpnl += pnl
+                initial_balance += pnl
+            running_pnl += pnl
         entryprice = None
+        if fillcheck == 1:
+            unfilledpnl += pnl
         fillcheck = 0
-    else:  # entry
+    else:  # status == "entry"
         if entryprice is not None:
+            # Close any previous implicit position first for accounting
             pnl = calculate_pnl(entryprice, entry_price_in, LastLastSide)
             if fillcheck == 0:
-                initail_balance += pnl
-            panl += pnl
+                initial_balance += pnl
+            running_pnl += pnl
         else:
             print(f"[ENTRY] Opening first position at {fmt_price(entry_price_in)}")
         entryprice = entry_price_in
@@ -144,7 +159,7 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str):
         fillcheck = 1
     LastLastSide = LastSide
 
-    print(f"[WEBHOOK] {trigger_time_iso} | {side} | Entry/Price: {entry_price_in} | symbol: {SYMBOL.upper()} | status: {status} | QUANTITY: {quantity}")
+
     try:
         payload = {
             "symbol": SYMBOL.upper(),
@@ -152,12 +167,13 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str):
             "quantity": quantity,
             "price": entry_price_in,
             "status": status,
-            "secret": secret
+            "secret": secret,
         }
         requests.post(WEBHOOK_URL, json=payload, timeout=5)
         print("Sent payload:", payload)
     except Exception as e:
         print("Webhook error:", e)
+
 
 def recompute_bounds_on_close():
     global upper_bound, lower_bound, _bounds_candle_ts, _triggered_window_id
@@ -176,12 +192,14 @@ def recompute_bounds_on_close():
 
     upper_bound = float(highs.max())
     lower_bound = float(lows.min())
-    _bounds_candle_ts = window["time"].iloc[-1]
+    _bounds_candle_ts = window["time"].iloc[-1]  # UTC
     _triggered_window_id = None
+
 
 # ==========================
 # Fillcheck update on every tick
 # ==========================
+
 def update_fillcheck(trade_price: float):
     global fillcheck, fillcount, entryprice, LastSide, status, totaltradecount, unfilledpnl
 
@@ -189,25 +207,31 @@ def update_fillcheck(trade_price: float):
         return
 
     if status == "entry":
-        if LastSide == "buy" and trade_price < entryprice:
+        if LastSide == "buy" and trade_price <= entryprice:  # <= to allow exact touch
             fillcheck = 0
             fillcount += 1
-            print(f"[FILL] Buy entry filled at {fmt_price(entryprice)} | Total fills={fillcount}/{totaltradecount}")
-        elif LastSide == "sell" and trade_price > entryprice:
+        elif LastSide == "sell" and trade_price >= entryprice:
             fillcheck = 0
             fillcount += 1
-            print(f"[FILL] Sell entry filled at {fmt_price(entryprice)} | Total fills={fillcount}/{totaltradecount}")
     elif status == "exit":
+        # Exit fill handling can be more sophisticated if you post exit orders
         fillcheck = 0
-        print(f"[FILL] Exit completed at {fmt_price(trade_price)}")
+
+
 
 # ==========================
 # Trigger logic
 # ==========================
+
 def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
     global alerts, _triggered_window_id, status, EntryCount, LastSide
 
-    if not (is_valid_price(trade_price) and upper_bound is not None and lower_bound is not None and _bounds_candle_ts):
+    if not (
+        is_valid_price(trade_price)
+        and upper_bound is not None
+        and lower_bound is not None
+        and _bounds_candle_ts is not None
+    ):
         return
     if _triggered_window_id == _bounds_candle_ts:
         return
@@ -216,27 +240,26 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
     trigger_time_iso = trigger_time.isoformat()
 
     def _process_side(side_name, entry_val, friendly):
+        nonlocal trigger_time_iso
         global EntryCount, LastSide, alerts, _triggered_window_id
-        if EntryCount == 0 or LastSide != side_name:
-            EntryCount = 1
-        else:
-            EntryCount += 1
         LastSide = side_name
 
-        send_webhook(trigger_time_iso, entry_val, side_name)
+        send_webhook(trigger_time_iso, entry_val, side_name, "entry")
         msg = f"{friendly} | {status}: {fmt_price(entry_val)} | Live {fmt_price(trade_price)} | Trigger {trigger_time_iso}"
         alerts.append(msg)
         alerts[:] = alerts[-50:]
         _triggered_window_id = _bounds_candle_ts
 
-    if trade_price >= upper_bound:
+    if trade_price > upper_bound:
         _process_side("buy", upper_bound, "LONG breakout Buy")
-    elif trade_price <= lower_bound:
+    elif trade_price < lower_bound:
         _process_side("sell", lower_bound, "SHORT breakout Sell")
+
 
 # ==========================
 # WebSocket handlers
 # ==========================
+
 def on_message(ws, message):
     global candles, live_price, last_valid_price
     try:
@@ -246,9 +269,14 @@ def on_message(ws, message):
 
         if stream and "kline" in stream:
             kline = payload["k"]
-            ts_dt = datetime.fromtimestamp(kline["t"] / 1000, tz=timezone.utc)
+            ts_dt = datetime.fromtimestamp(kline["t"] / 1000, tz=STORE_TZ)  # UTC
 
-            o, h, l, c = float(kline["o"]), float(kline["h"]), float(kline["l"]), float(kline["c"])
+            o, h, l, c = (
+                float(kline["o"]),
+                float(kline["h"]),
+                float(kline["l"]),
+                float(kline["c"]),
+            )
 
             if is_valid_price(c):
                 last_valid_price = c
@@ -266,7 +294,7 @@ def on_message(ws, message):
                 close_val = c if is_valid_price(c) else open_val
 
                 new_row = {
-                    "time": ts_dt,
+                    "time": ts_dt,  # UTC
                     "Open": open_val,
                     "High": max(high_val, open_val),
                     "Low": min(low_val, open_val),
@@ -274,22 +302,12 @@ def on_message(ws, message):
                 }
                 candles = pd.concat([candles, pd.DataFrame([new_row])], ignore_index=True)
 
-                # ---------- NEW: Send webhook on new candle open ----------
+                # ---------- OPTIONAL: Send webhook on new candle open (EXIT) ----------
                 try:
-                    webhook_payload = {
-                        "symbol": "XRPUSDC",
-                        "side": "buy",
-                        "quantity": "1.8",
-                        "price": f"{open_val:.4f}",  # candle open price
-                        "status": "Exit",
-                        "secret": "gajraj09",
-                    }
-                    requests.post(WEBHOOK_URL, json=webhook_payload, timeout=5)
-                    print(f"[NEW CANDLE WEBHOOK] {ts_dt} | Payload sent:", webhook_payload)
-
-                    alert_msg = f"NEW CANDLE EXIT | Price: {fmt_price(open_val)} | Time: {ts_dt.strftime('%H:%M:%S')}"
-                    alerts.append(alert_msg)
-                    alerts[:] = alerts[-50:]  # keep last 50
+                    send_webhook(ts_dt.astimezone(KOLKATA_TZ).strftime("%H:%M:%S"), open_val, "buy", "exit")
+                    msg = f"EXIT | Price: {fmt_price(open_val)} | Time: {ts_dt.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')}"
+                    alerts.append(msg)
+                    alerts[:] = alerts[-50:]
                 except Exception as e:
                     print("New candle webhook error:", e)
 
@@ -307,7 +325,8 @@ def on_message(ws, message):
             if len(candles) > CANDLE_LIMIT:
                 candles = candles.tail(CANDLE_LIMIT).reset_index(drop=True)
 
-            if kline["x"]:
+            if kline.get("x"):
+                # Candle closed -> recompute bounds
                 recompute_bounds_on_close()
 
         elif stream and "trade" in stream:
@@ -326,25 +345,34 @@ def on_message(ws, message):
                 candles.at[idx, "High"] = max(candles.at[idx, "High"], trade_price)
                 candles.at[idx, "Low"] = min(candles.at[idx, "Low"], trade_price)
 
+            # Update fill status and try triggers
+            update_fillcheck(trade_price)
             trade_ts_ms = int(payload.get("T") or payload.get("E") or time.time() * 1000)
             try_trigger_on_trade(trade_price, trade_ts_ms)
 
     except Exception as e:
         print("on_message error:", e)
 
+
 def on_error(ws, error):
     print("WebSocket error:", error)
 
+
 def on_close(ws, code, msg):
     print("WebSocket closed", code, msg)
-    time.sleep(2)
-    threading.Thread(target=run_ws, daemon=True).start()
+    # Single delayed restart to avoid tight loops
+    def _restart():
+        time.sleep(2)
+        run_ws()
+    threading.Thread(target=_restart, daemon=True).start()
+
 
 def on_open(ws):
     print("WebSocket connected")
     params = [f"{SYMBOL}@kline_{INTERVAL}", f"{SYMBOL}@trade"]
     msg = {"method": "SUBSCRIBE", "params": params, "id": 1}
     ws.send(json.dumps(msg))
+
 
 def run_ws():
     url = "wss://fstream.binance.com/stream"
@@ -353,70 +381,85 @@ def run_ws():
         on_open=on_open,
         on_message=on_message,
         on_error=on_error,
-        on_close=on_close
+        on_close=on_close,
     )
+    # Ping to keep alive
     ws.run_forever(ping_interval=20, ping_timeout=10)
+
 
 # ==========================
 # Dash App
 # ==========================
 app = dash.Dash(__name__)
 server = app.server  # expose Flask server for Render/Heroku
-app.layout = html.Div([
-    html.H1(f"{SYMBOL.upper()} Live Prices & Last {CANDLE_LIMIT} Candles"),
-    html.Div([
-        html.H2(id="live-price", style={"color": "black", "marginRight": "20px"}),
-        html.H2(id="bal", style={"color": "black", "marginRight": "20px"}),
-        html.Div(id="trade-stats", style={"display": "flex", "gap": "20px", "alignItems": "center"})
-    ], style={"display": "flex", "flexDirection": "row", "alignItems": "center"}),
-    html.Div(id="ohlc-values"),
-    html.Div(id="bounds", style={"marginTop": "8px", "color": "#9ad"}),
-    html.H3("Strategy Alerts"),
-    html.Ul(id="strategy-alerts"),
-    dcc.Interval(id="interval", interval=500, n_intervals=0)  # update every 0.5s
-])
+app.layout = html.Div(
+    [
+        html.H1(f"{SYMBOL.upper()} Live Prices & Last {CANDLE_LIMIT} Candles"),
+        html.Div(
+            [
+                html.H2(id="live-price", style={"color": "black", "marginRight": "20px"}),
+                html.H2(id="bal", style={"color": "black", "marginRight": "20px"}),
+                html.Div(id="trade-stats", style={"display": "flex", "gap": "20px", "alignItems": "center"}),
+            ],
+            style={"display": "flex", "flexDirection": "row", "alignItems": "center"},
+        ),
+        html.Div(id="ohlc-values"),
+        html.Div(id="bounds", style={"marginTop": "8px", "color": "#9ad"}),
+        html.H3("Strategy Alerts"),
+        html.Ul(id="strategy-alerts"),
+        dcc.Interval(id="interval", interval=500, n_intervals=0),  # update every 0.5s
+    ]
+)
+
 
 @app.callback(
-    [Output("live-price", "children"),
-     Output("bal", "children"),
-     Output("trade-stats", "children"),
-     Output("ohlc-values", "children"),
-     Output("strategy-alerts", "children"),
-     Output("bounds", "children")],
-    [Input("interval", "n_intervals")]
+    [
+        Output("live-price", "children"),
+        Output("bal", "children"),
+        Output("trade-stats", "children"),
+        Output("ohlc-values", "children"),
+        Output("strategy-alerts", "children"),
+        Output("bounds", "children"),
+    ],
+    [Input("interval", "n_intervals")],
 )
 def update_display(_):
     if len(candles) == 0:
         return (
             "Live Price: --",
-            f"Balance: {fmt_price(initail_balance)}",
+            f"Balance: {fmt_price(initial_balance)}",
             [],
             [],
             [],
-            "Bounds: waiting for enough closed candles..."
+            "Bounds: waiting for enough closed candles...",
         )
 
     lp = f"Live Price: {fmt_price(live_price)}"
-    bal = f"Balance: {fmt_price(initail_balance)}"
+    bal = f"Balance: {fmt_price(initial_balance)}"
 
     stats_html = [
         html.Div(f"FillCheck: {fillcheck}"),
         html.Div(f"FillCount: {fillcount}"),
         html.Div(f"TotalTrades: {totaltradecount}"),
-        html.Div(f"UnfilledPnL: {fmt_price(unfilledpnl)}")
+        html.Div(f"UnfilledPnL: {fmt_price(unfilledpnl)}"),
     ]
 
     ohlc_html = []
     for idx, row in candles.iterrows():
-        ts_str = row['time'].astimezone(KOLKATA_TZ).strftime("%H:%M:%S")
-        text = f"{ts_str} → O:{fmt_price(row['Open'])}, H:{fmt_price(row['High'])}, L:{fmt_price(row['Low'])}, C:{fmt_price(row['Close'])}"
+        ts_str = row["time"].astimezone(KOLKATA_TZ).strftime("%H:%M:%S")
+        text = (
+            f"{ts_str} → O:{fmt_price(row['Open'])}, H:{fmt_price(row['High'])}, "
+            f"L:{fmt_price(row['Low'])}, C:{fmt_price(row['Close'])}"
+        )
         ohlc_html.append(html.Div(text))
 
     alerts_html = [html.Li(a) for a in alerts[-10:]]
 
     if upper_bound is not None and lower_bound is not None and _bounds_candle_ts is not None:
-        btxt = (f"Bounds[{LENGTH}] → Upper {fmt_price(upper_bound)}, Lower {fmt_price(lower_bound)} "
-                f"(from candle {_bounds_candle_ts.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')})")
+        btxt = (
+            f"Bounds[{LENGTH}] → Upper {fmt_price(upper_bound)}, Lower {fmt_price(lower_bound)} "
+            f"(from candle {_bounds_candle_ts.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')})"
+        )
     else:
         btxt = "Bounds: waiting for enough closed candles..."
 
