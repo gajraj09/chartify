@@ -137,8 +137,7 @@ def save_state():
             "fillcheck": int(fillcheck),
             "fillcount": int(fillcount),
             "totaltradecount": int(totaltradecount),
-            "unfilledpnl": float(unfilledpnl),
-            "updated_at": datetime.utcnow().isoformat()
+            "unfilledpnl": float(unfilledpnl)
         }
         state_col.replace_one({"_id": "bot_state"}, state, upsert=True)
     except Exception as e:
