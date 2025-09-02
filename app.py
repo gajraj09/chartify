@@ -1,3 +1,6 @@
+# ==================== 15 Min candle chart =========================================
+# ==================================================================================
+
 import json
 import os
 import time
@@ -11,7 +14,7 @@ import dash
 from dash import dcc, html
 from dash.dependencies import Input, Output
 from flask import Flask, request, jsonify
-from pymongo import MongoClient
+
 # ==========================
 # Config
 # ==========================
@@ -23,22 +26,12 @@ WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://www.example.com/webhook")
 
 LENGTH = 2  # number of LAST CLOSED candles to compute bounds
 
-# MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://gsr939988_db_user:ROYfY6z5kxUumq5i@tradingbot.lvnxj3a.mongodb.net/?retryWrites=true&w=majority&appName=TradingBot")
-# DB_NAME = "trading_bot"
-# COLLECTION_STATE = "bot_state"
-MONGO_URI = os.environ.get(
-    "MONGO_URI",
-    "mongodb+srv://gsr939988_db_user:ROYfY6z5kxUumq5i@tradingbot.lvnxj3a.mongodb.net/?retryWrites=true&w=majority&appName=TradingBot"
-)
-DB_NAME = "trading_bot"
-COLLECTION_STATE = "bot_state"
-
 # ==========================
 # Timezones
 # ==========================
 # Store all candle timestamps in UTC. Convert to Kolkata only for display.
 KOLKATA_TZ = timezone(timedelta(hours=5, minutes=30))
-STORE_TZ = timezone(timedelta(hours=5, minutes=30))
+STORE_TZ = timezone.utc
 
 # ==========================
 # Globals
@@ -67,199 +60,6 @@ fillcheck = 0
 fillcount = 0
 totaltradecount = 0
 unfilledpnl = 0.0
-
-# ==========================
-# MONGO DB
-# ==========================
-
-
-# ==========================
-# Timezones
-# ==========================
-KOLKATA_TZ = timezone(timedelta(hours=5, minutes=30))
-STORE_TZ = timezone.utc  # store timestamps in UTC
-
-# ==========================
-# Globals (default values)
-# ==========================
-candles = pd.DataFrame(columns=["time", "Open", "High", "Low", "Close"])  # 'time' is UTC-aware
-live_price = None
-last_valid_price = None
-alerts = []
-
-initial_balance = 10.0
-entryprice = None
-running_pnl = 0.0
-
-upper_bound = None
-lower_bound = None
-_bounds_candle_ts = None  # UTC datetime of the candle used to compute bounds
-_triggered_window_id = None
-
-EntryCount = 0
-LastSide = None
-LastLastSide = "buy"
-status = None
-
-# Order filling data
-fillcheck = 0
-fillcount = 0
-totaltradecount = 0
-unfilledpnl = 0.0
-
-# ==========================
-# MongoDB Setup (TLS/SSL safe)
-# ==========================
-try:
-    mongo_client = MongoClient(
-        MONGO_URI,
-        tls=True,  # enforce TLS
-        tlsAllowInvalidCertificates=True,
-        serverSelectionTimeoutMS=10000  # 10s timeout
-    )
-    db = mongo_client[DB_NAME]
-    state_col = db[COLLECTION_STATE]
-    # Test connection
-    mongo_client.admin.command("ping")
-    print("✅ MongoDB connection successful")
-except Exception as e:
-    print("⚠️ MongoDB connection failed:", e)
-    state_col = None  # fallback to None, prevent crash
-
-# try:
-#     client = MongoClient(
-#         MONGO_URI,
-#         tls=True,
-#         tlsAllowInvalidCertificates=False,
-#         serverSelectionTimeoutMS=10000
-#     )
-#     db = client[DB_NAME]
-#     collection = db[COLLECTION_NAME]
-#     print("MongoDB connected successfully ✅")
-# except Exception as e:
-#     print("MongoDB connection failed ❌", e)
-
-
-# ==========================
-# Serialize/Deserialize
-# ==========================
-def _serialize_candles(df: pd.DataFrame):
-    if df is None or df.empty:
-        return []
-    tmp = df.copy()
-    def _iso_safe(x):
-        if pd.isna(x):
-            return None
-        if isinstance(x, str):
-            return x
-        if getattr(x, "tzinfo", None) is None:
-            x = x.replace(tzinfo=STORE_TZ)
-        return x.isoformat()
-    tmp["time"] = tmp["time"].apply(_iso_safe)
-    return tmp.to_dict(orient="records")
-
-def _deserialize_candles(records):
-    if not records:
-        return pd.DataFrame(columns=["time", "Open", "High", "Low", "Close"])
-    df = pd.DataFrame(records)
-    if "time" in df.columns:
-        df["time"] = pd.to_datetime(df["time"], utc=True)
-        df["time"] = df["time"].dt.tz_convert(STORE_TZ)
-    return df
-
-
-# ==========================
-# Save / Load State
-# ==========================
-def save_state():
-    global candles, live_price, last_valid_price, alerts
-    global initial_balance, entryprice, running_pnl
-    global upper_bound, lower_bound, _bounds_candle_ts, _triggered_window_id
-    global EntryCount, LastSide, LastLastSide, status
-    global fillcheck, fillcount, totaltradecount, unfilledpnl
-
-    if state_col is None:
-        return
-
-    try:
-        state = {
-            "_id": "bot_state",
-            "candles": _serialize_candles(candles),
-            "live_price": float(live_price) if is_valid_price(live_price) else None,
-            "last_valid_price": float(last_valid_price) if is_valid_price(last_valid_price) else None,
-            "alerts": alerts[-100:],
-            "initial_balance": float(initial_balance),
-            "entryprice": float(entryprice) if is_valid_price(entryprice) else None,
-            "running_pnl": float(running_pnl),
-            "upper_bound": float(upper_bound) if is_valid_price(upper_bound) else None,
-            "lower_bound": float(lower_bound) if is_valid_price(lower_bound) else None,
-            "_bounds_candle_ts": _bounds_candle_ts.isoformat() if _bounds_candle_ts else None,
-            "_triggered_window_id": _triggered_window_id.isoformat() if _triggered_window_id else None,
-            "EntryCount": int(EntryCount),
-            "LastSide": LastSide,
-            "LastLastSide": LastLastSide,
-            "status": status,
-            "fillcheck": int(fillcheck),
-            "fillcount": int(fillcount),
-            "totaltradecount": int(totaltradecount),
-            "unfilledpnl": float(unfilledpnl)
-        }
-        state_col.replace_one({"_id": "bot_state"}, state, upsert=True)
-    except Exception as e:
-        print("⚠️ Error saving state to MongoDB:", e)
-
-def load_state():
-    global candles, live_price, last_valid_price, alerts
-    global initial_balance, entryprice, running_pnl
-    global upper_bound, lower_bound, _bounds_candle_ts, _triggered_window_id
-    global EntryCount, LastSide, LastLastSide, status
-    global fillcheck, fillcount, totaltradecount, unfilledpnl
-
-    if state_col is None:
-        return
-
-    try:
-        doc = state_col.find_one({"_id": "bot_state"})
-        if not doc:
-            print("ℹ️ No saved state found in DB, fresh start.")
-            return
-
-        candles = _deserialize_candles(doc.get("candles", []))
-        live_price = doc.get("live_price")
-        last_valid_price = doc.get("last_valid_price")
-        alerts = doc.get("alerts", []) or []
-
-        initial_balance = doc.get("initial_balance", 10.0)
-        entryprice = doc.get("entryprice")
-        running_pnl = doc.get("running_pnl", 0.0)
-
-        upper_bound = doc.get("upper_bound")
-        lower_bound = doc.get("lower_bound")
-
-        _bounds_candle_ts = (
-            pd.to_datetime(doc.get("_bounds_candle_ts")).tz_convert(STORE_TZ)
-            if doc.get("_bounds_candle_ts") else None
-        )
-        _triggered_window_id = (
-            pd.to_datetime(doc.get("_triggered_window_id")).tz_convert(STORE_TZ)
-            if doc.get("_triggered_window_id") else None
-        )
-
-        EntryCount = doc.get("EntryCount", 0)
-        LastSide = doc.get("LastSide")
-        LastLastSide = doc.get("LastLastSide", "buy")
-        status = doc.get("status")
-
-        fillcheck = doc.get("fillcheck", 0)
-        fillcount = doc.get("fillcount", 0)
-        totaltradecount = doc.get("totaltradecount", 0)
-        unfilledpnl = doc.get("unfilledpnl", 0.0)
-
-        print("✅ State restored from MongoDB")
-    except Exception as e:
-        print("⚠️ Error loading state from MongoDB:", e)
-
-
 
 # ==========================
 # Utilities
@@ -292,32 +92,28 @@ def fetch_initial_candles():
     """Fetch last CANDLE_LIMIT klines from Binance Futures API and seed the DF.
     Ensures timestamps are stored in UTC (STORE_TZ)."""
     global candles, live_price, last_valid_price
-    try:
-        url = (
-            f"https://fapi.binance.com/fapi/v1/klines?symbol={SYMBOL.upper()}&interval={INTERVAL}&limit={CANDLE_LIMIT}"
+    url = (
+        f"https://fapi.binance.com/fapi/v1/klines?symbol={SYMBOL.upper()}&interval={INTERVAL}&limit={CANDLE_LIMIT}"
+    )
+    r = requests.get(url, timeout=10)
+    r.raise_for_status()
+    data = r.json()
+
+    rows = []
+    for k in data:
+        rows.append(
+            {
+                "time": datetime.fromtimestamp(k[0] / 1000, tz=STORE_TZ),  # UTC
+                "Open": float(k[1]),
+                "High": float(k[2]),
+                "Low": float(k[3]),
+                "Close": float(k[4]),
+            }
         )
-        r = requests.get(url, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-    
-        rows = []
-        for k in data:
-            rows.append(
-                {
-                    "time": datetime.fromtimestamp(k[0] / 1000, tz=STORE_TZ),  # UTC
-                    "Open": float(k[1]),
-                    "High": float(k[2]),
-                    "Low": float(k[3]),
-                    "Close": float(k[4]),
-                }
-            )
-        candles = pd.DataFrame(rows)
-        if not candles.empty:
-            live_price = float(candles["Close"].iloc[-1])
-            last_valid_price = live_price if is_valid_price(live_price) else None
-        save_state()
-    except Exception as e:
-        print("Initial candle fetch failed:", e)
+    candles = pd.DataFrame(rows)
+    if not candles.empty:
+        live_price = float(candles["Close"].iloc[-1])
+        last_valid_price = live_price if is_valid_price(live_price) else None
 
 
 def calculate_pnl(entry_price: float, closing_price: float, side: str) -> float:
@@ -380,7 +176,6 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status
         print("Sent payload:", payload)
     except Exception as e:
         print("Webhook error:", e)
-    save_state()
 
 
 def recompute_bounds_on_close():
@@ -390,7 +185,6 @@ def recompute_bounds_on_close():
         lower_bound = None
         _bounds_candle_ts = None
         _triggered_window_id = None
-        save_state()
         return
 
     window = candles.tail(LENGTH)
@@ -403,7 +197,6 @@ def recompute_bounds_on_close():
     lower_bound = float(lows.min())
     _bounds_candle_ts = window["time"].iloc[-1]  # UTC
     _triggered_window_id = None
-    save_state()
 
 
 # ==========================
@@ -415,23 +208,17 @@ def update_fillcheck(trade_price: float):
 
     if entryprice is None or fillcheck == 0:
         return
-    was_fill = False
+
     if status == "entry":
         if LastSide == "buy" and trade_price <= entryprice:  # <= to allow exact touch
             fillcheck = 0
             fillcount += 1
-            was_fill = True
         elif LastSide == "sell" and trade_price >= entryprice:
             fillcheck = 0
             fillcount += 1
-            was_fill = True
     elif status == "exit":
         # Exit fill handling can be more sophisticated if you post exit orders
         fillcheck = 0
-        was_fill = True
-    if was_fill:
-        print(f"Order filled detected at price {trade_price}. fillcheck={fillcheck}, fillcount={fillcount}")
-        save_state()
 
 
 
@@ -465,7 +252,6 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
         alerts.append(msg)
         alerts[:] = alerts[-50:]
         _triggered_window_id = _bounds_candle_ts
-        save_state()
 
     if trade_price > upper_bound:
         _process_side("buy", upper_bound, "LONG breakout Buy")
@@ -527,7 +313,6 @@ def on_message(ws, message):
                     alerts[:] = alerts[-50:]
                 except Exception as e:
                     print("New candle webhook error:", e)
-                save_state()
 
             else:
                 idx = candles.index[-1]
@@ -703,42 +488,19 @@ def ping():
 # Main (Render compatible)
 # ==========================
 if __name__ == "__main__":
-    # 1) Attempt to load saved state
     try:
-        load_state()
+        fetch_initial_candles()
     except Exception as e:
-        print("Warning: load_state() failed:", e)
+        print("Initial fetch failed:", e)
 
-    # 2) If DB had no candles, fetch from Binance for initial seeding
-    if candles.empty:
-        try:
-            fetch_initial_candles()
-        except Exception as e:
-            print("Initial fetch failed:", e)
-
-    # 3) If we have enough candles, recompute bounds
-    if len(candles) >= LENGTH and (upper_bound is None or lower_bound is None):
+    if len(candles) >= LENGTH:
         recompute_bounds_on_close()
 
-    # 4) Start websocket thread
     t = threading.Thread(target=run_ws, daemon=True)
     t.start()
 
-    # 5) Optionally start a periodic save (safeguard) every N seconds to reduce risk of data loss
-    def periodic_save_loop(interval_s=30):
-        while True:
-            try:
-                save_state()
-            except Exception as e:
-                print("Periodic save error:", e)
-            time.sleep(interval_s)
-
-    saver_thread = threading.Thread(target=periodic_save_loop, args=(30,), daemon=True)
-    saver_thread.start()
-
     port = int(os.environ.get("PORT", 10000))  # Render sets PORT
     app.run(host="0.0.0.0", port=port, debug=False)
-
 
 
 # ===========================================================================================================================================
