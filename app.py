@@ -23,7 +23,13 @@ WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://www.example.com/webhook")
 
 LENGTH = 2  # number of LAST CLOSED candles to compute bounds
 
-MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://gsr939988_db_user:ROYfY6z5kxUumq5i@tradingbot.lvnxj3a.mongodb.net/?retryWrites=true&w=majority&appName=TradingBot")
+# MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://gsr939988_db_user:ROYfY6z5kxUumq5i@tradingbot.lvnxj3a.mongodb.net/?retryWrites=true&w=majority&appName=TradingBot")
+# DB_NAME = "trading_bot"
+# COLLECTION_STATE = "bot_state"
+MONGO_URI = os.environ.get(
+    "MONGO_URI",
+    "mongodb+srv://gsr939988_db_user:ROYfY6z5kxUumq5i@tradingbot.lvnxj3a.mongodb.net/?retryWrites=true&w=majority&appName=TradingBot"
+)
 DB_NAME = "trading_bot"
 COLLECTION_STATE = "bot_state"
 
@@ -102,15 +108,28 @@ totaltradecount = 0
 unfilledpnl = 0.0
 
 # ==========================
-# MongoDB Setup
+# MongoDB Setup (TLS/SSL safe)
 # ==========================
-mongo_client = MongoClient(MONGO_URI)
-db = mongo_client[DB_NAME]
-state_col = db[COLLECTION_STATE]
+try:
+    mongo_client = MongoClient(
+        MONGO_URI,
+        tls=True,  # enforce TLS
+        serverSelectionTimeoutMS=10000  # 10s timeout
+    )
+    db = mongo_client[DB_NAME]
+    state_col = db[COLLECTION_STATE]
+    # Test connection
+    mongo_client.admin.command("ping")
+    print("✅ MongoDB connection successful")
+except Exception as e:
+    print("⚠️ MongoDB connection failed:", e)
+    state_col = None  # fallback to None, prevent crash
 
 
+# ==========================
+# Serialize/Deserialize
+# ==========================
 def _serialize_candles(df: pd.DataFrame):
-    """Return list[dict] with 'time' as ISO strings for storage."""
     if df is None or df.empty:
         return []
     tmp = df.copy()
@@ -119,34 +138,34 @@ def _serialize_candles(df: pd.DataFrame):
             return None
         if isinstance(x, str):
             return x
-        # ensure timezone-aware
         if getattr(x, "tzinfo", None) is None:
             x = x.replace(tzinfo=STORE_TZ)
         return x.isoformat()
     tmp["time"] = tmp["time"].apply(_iso_safe)
     return tmp.to_dict(orient="records")
 
-
 def _deserialize_candles(records):
-    """Turn stored records (with time iso) into DataFrame with timezone-aware datetimes (UTC)."""
     if not records:
         return pd.DataFrame(columns=["time", "Open", "High", "Low", "Close"])
     df = pd.DataFrame(records)
     if "time" in df.columns:
-        # parse ISO strings into timezone-aware UTC datetimes
         df["time"] = pd.to_datetime(df["time"], utc=True)
-        # ensure tz is STORE_TZ (UTC)
         df["time"] = df["time"].dt.tz_convert(STORE_TZ)
     return df
 
 
+# ==========================
+# Save / Load State
+# ==========================
 def save_state():
-    """Save global state + candles + alerts to MongoDB."""
     global candles, live_price, last_valid_price, alerts
     global initial_balance, entryprice, running_pnl
     global upper_bound, lower_bound, _bounds_candle_ts, _triggered_window_id
     global EntryCount, LastSide, LastLastSide, status
     global fillcheck, fillcount, totaltradecount, unfilledpnl
+
+    if state_col is None:
+        return
 
     try:
         state = {
@@ -154,7 +173,7 @@ def save_state():
             "candles": _serialize_candles(candles),
             "live_price": float(live_price) if is_valid_price(live_price) else None,
             "last_valid_price": float(last_valid_price) if is_valid_price(last_valid_price) else None,
-            "alerts": alerts[-100:],  # keep last 100
+            "alerts": alerts[-100:],
             "initial_balance": float(initial_balance),
             "entryprice": float(entryprice) if is_valid_price(entryprice) else None,
             "running_pnl": float(running_pnl),
@@ -175,14 +194,15 @@ def save_state():
     except Exception as e:
         print("⚠️ Error saving state to MongoDB:", e)
 
-
 def load_state():
-    """Restore global state from MongoDB."""
     global candles, live_price, last_valid_price, alerts
     global initial_balance, entryprice, running_pnl
     global upper_bound, lower_bound, _bounds_candle_ts, _triggered_window_id
     global EntryCount, LastSide, LastLastSide, status
     global fillcheck, fillcount, totaltradecount, unfilledpnl
+
+    if state_col is None:
+        return
 
     try:
         doc = state_col.find_one({"_id": "bot_state"})
