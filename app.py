@@ -114,6 +114,7 @@ try:
     mongo_client = MongoClient(
         MONGO_URI,
         tls=True,  # enforce TLS
+        tlsAllowInvalidCertificates=False,
         serverSelectionTimeoutMS=10000  # 10s timeout
     )
     db = mongo_client[DB_NAME]
@@ -124,6 +125,19 @@ try:
 except Exception as e:
     print("⚠️ MongoDB connection failed:", e)
     state_col = None  # fallback to None, prevent crash
+
+# try:
+#     client = MongoClient(
+#         MONGO_URI,
+#         tls=True,
+#         tlsAllowInvalidCertificates=False,
+#         serverSelectionTimeoutMS=10000
+#     )
+#     db = client[DB_NAME]
+#     collection = db[COLLECTION_NAME]
+#     print("MongoDB connected successfully ✅")
+# except Exception as e:
+#     print("MongoDB connection failed ❌", e)
 
 
 # ==========================
