@@ -21,16 +21,19 @@ from pymongo import MongoClient
 # ==========================
 # Config
 # ==========================
-SYMBOL = "xrpusdc"       # keep lowercase for websocket streams
+SYMBOL = "ethusdc"       # keep lowercase for websocket streams
 INTERVAL = "15m"
 CANDLE_LIMIT = 10
 PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "mongodb+srv://gsr939988_db_user:ROYfY6z5kxUumq5i@tradingbot.lvnxj3a.mongodb.net/?retryWrites=true&w=majority&appName=TradingBot")
 
-LENGTH = 2  # number of LAST CLOSED candles to compute bounds
+# ====For ETHUSDC 15 Min Chart
+LENGTH = 1  # number of LAST CLOSED candles to compute bounds
+# ====For XRPUSDC 15 Min Chart
+# LENGTH = 2  # number of LAST CLOSED candles to compute bounds
 
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
-DB_NAME = "trading_bot"
+DB_NAME = "trading_bot_ETHUSDC"
 COLLECTION_STATE = "bot_state"
 
 # ==========================
@@ -407,7 +410,7 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
 # ==========================
 
 def on_message(ws, message):
-    global candles, live_price, last_valid_price
+    global candles, live_price, last_valid_price,status
     try:
         data = json.loads(message)
         stream = data.get("stream")
@@ -449,14 +452,15 @@ def on_message(ws, message):
                 candles = pd.concat([candles, pd.DataFrame([new_row])], ignore_index=True)
 
                 # ---------- OPTIONAL: Send webhook on new candle open (EXIT) ----------
-                try:
-                    send_webhook(ts_dt.astimezone(KOLKATA_TZ).strftime("%H:%M:%S"), open_val, "buy", "exit")
-                    msg = f"EXIT | Price: {fmt_price(open_val)} | Time: {ts_dt.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')}"
-                    alerts.append(msg)
-                    alerts[:] = alerts[-50:]
-                except Exception as e:
-                    print("New candle webhook error:", e)
-                save_state()
+                if status != "exit":
+                    try:
+                        send_webhook(ts_dt.astimezone(KOLKATA_TZ).strftime("%H:%M:%S"), open_val, "buy", "exit")
+                        msg = f"EXIT | Price: {fmt_price(open_val)} | Time: {ts_dt.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')}"
+                        alerts.append(msg)
+                        alerts[:] = alerts[-50:]
+                    except Exception as e:
+                        print("New candle webhook error:", e)
+                    save_state()
 
             else:
                 idx = candles.index[-1]
