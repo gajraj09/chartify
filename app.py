@@ -59,6 +59,7 @@ upper_bound = None
 lower_bound = None
 _bounds_candle_ts = None  # UTC datetime of the candle used to compute bounds
 _triggered_window_id = None
+_triggered_window_side = None
 
 EntryCount = 0
 LastSide = None
@@ -134,6 +135,7 @@ def save_state():
             "lower_bound": float(lower_bound) if is_valid_price(lower_bound) else None,
             "_bounds_candle_ts": _bounds_candle_ts.isoformat() if _bounds_candle_ts else None,
             "_triggered_window_id": _triggered_window_id.isoformat() if _triggered_window_id else None,
+            "_triggered_window_side": _triggered_window_side,
             "EntryCount": int(EntryCount),
             "LastSide": LastSide,
             "LastLastSide": LastLastSide,
@@ -182,6 +184,7 @@ def load_state():
             pd.to_datetime(doc.get("_triggered_window_id")).tz_convert(STORE_TZ)
             if doc.get("_triggered_window_id") else None
         )
+        _triggered_window_side = doc.get("_triggered_window_side","buy")
 
         EntryCount = doc.get("EntryCount", 0)
         LastSide = doc.get("LastSide")
@@ -376,7 +379,7 @@ def update_fillcheck(trade_price: float):
 # ==========================
 
 def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
-    global alerts, _triggered_window_id, status, EntryCount, LastSide
+    global alerts, _triggered_window_id,_triggered_window_side, status, EntryCount, LastSide
 
     if not (
         is_valid_price(trade_price)
@@ -385,8 +388,7 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
         and _bounds_candle_ts is not None
     ):
         return
-    if _triggered_window_id == _bounds_candle_ts:
-        return
+    
 
     trigger_time = datetime.fromtimestamp(trade_ts_ms / 1000, tz=KOLKATA_TZ)
     trigger_time_iso = trigger_time.isoformat()
@@ -402,12 +404,17 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
         alerts.append(msg)
         alerts[:] = alerts[-50:]
         _triggered_window_id = _bounds_candle_ts
+        _triggered_window_side = side_name
         save_state()
 
     if trade_price > upper_bound:
-        _process_side("buy", upper_bound, "LONG")
+        if _triggered_window_id == _bounds_candle_ts and _triggered_window_side == "buy":
+            return
+        else : _process_side("buy", upper_bound, "LONG")
     elif trade_price < lower_bound:
-        _process_side("sell", lower_bound, "SHORT")
+        if _triggered_window_id == _bounds_candle_ts and _triggered_window_side == "sell":
+            return
+        else: _process_side("sell", lower_bound, "SHORT")
 
 
 # ==========================
