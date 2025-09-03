@@ -70,6 +70,7 @@ fillcheck = 0
 fillcount = 0
 totaltradecount = 0
 unfilledpnl = 0.0
+lastpnl = 0
 
 
 # ==========================
@@ -264,7 +265,7 @@ def calculate_pnl(entry_price: float, closing_price: float, side: str) -> float:
 
 
 def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status_fun: str):
-    global EntryCount, LastSide, status, entryprice, running_pnl, initial_balance
+    global EntryCount, LastSide, status, entryprice, running_pnl, initial_balance, lastpnl
     global fillcheck, totaltradecount, unfilledpnl, LastLastSide
 
     secret = "gajraj09"
@@ -280,7 +281,9 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status
             pnl = calculate_pnl(entryprice, entry_price_in, LastLastSide)
             if fillcheck == 0:
                 initial_balance += pnl
+                
             running_pnl += pnl
+            lastpnl = pnl
         entryprice = None
         if fillcheck == 1:
             unfilledpnl += pnl
@@ -292,6 +295,7 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status
             if fillcheck == 0:
                 initial_balance += pnl
             running_pnl += pnl
+            lastpnl = pnl
         else:
             print(f"[ENTRY] Opening first position at {fmt_price(entry_price_in)}")
         entryprice = entry_price_in
@@ -386,6 +390,7 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
 
     trigger_time = datetime.fromtimestamp(trade_ts_ms / 1000, tz=KOLKATA_TZ)
     trigger_time_iso = trigger_time.isoformat()
+    ts_dt = datetime.fromtimestamp(trade_ts_ms / 1000, tz=STORE_TZ)
 
     def _process_side(side_name, entry_val, friendly):
         nonlocal trigger_time_iso
@@ -393,16 +398,16 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
         LastSide = side_name
 
         send_webhook(trigger_time_iso, entry_val, side_name, "entry")
-        msg = f"{friendly} | {status}: {fmt_price(entry_val)} | Live {fmt_price(trade_price)} | Trigger {trigger_time_iso}"
+        msg = f"{friendly} | {status}: {fmt_price(entry_val)} | Live {fmt_price(trade_price)} | Trigger {ts_dt.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')}"
         alerts.append(msg)
         alerts[:] = alerts[-50:]
         _triggered_window_id = _bounds_candle_ts
         save_state()
 
     if trade_price > upper_bound:
-        _process_side("buy", upper_bound, "LONG breakout Buy")
+        _process_side("buy", upper_bound, "LONG")
     elif trade_price < lower_bound:
-        _process_side("sell", lower_bound, "SHORT breakout Sell")
+        _process_side("sell", lower_bound, "SHORT")
 
 
 # ==========================
@@ -410,7 +415,7 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
 # ==========================
 
 def on_message(ws, message):
-    global candles, live_price, last_valid_price,status
+    global candles, live_price, last_valid_price,status,lastpnl
     try:
         data = json.loads(message)
         stream = data.get("stream")
@@ -455,7 +460,7 @@ def on_message(ws, message):
                 if status != "exit":
                     try:
                         send_webhook(ts_dt.astimezone(KOLKATA_TZ).strftime("%H:%M:%S"), open_val, "buy", "exit")
-                        msg = f"EXIT | Price: {fmt_price(open_val)} | Time: {ts_dt.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')}"
+                        msg = f"EXIT | Price: {fmt_price(open_val)} | Time: {ts_dt.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')}| PnL: {lastpnl}"
                         alerts.append(msg)
                         alerts[:] = alerts[-50:]
                     except Exception as e:
