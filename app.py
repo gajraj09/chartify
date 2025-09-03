@@ -59,7 +59,7 @@ upper_bound = None
 lower_bound = None
 _bounds_candle_ts = None  # UTC datetime of the candle used to compute bounds
 _triggered_window_id = None
-_triggered_window_side = None
+# _triggered_window_side = None
 
 EntryCount = 0
 LastSide = None
@@ -135,7 +135,7 @@ def save_state():
             "lower_bound": float(lower_bound) if is_valid_price(lower_bound) else None,
             "_bounds_candle_ts": _bounds_candle_ts.isoformat() if _bounds_candle_ts else None,
             "_triggered_window_id": _triggered_window_id.isoformat() if _triggered_window_id else None,
-            "_triggered_window_side": _triggered_window_side,
+            # "_triggered_window_side": _triggered_window_side,
             "EntryCount": int(EntryCount),
             "LastSide": LastSide,
             "LastLastSide": LastLastSide,
@@ -184,7 +184,7 @@ def load_state():
             pd.to_datetime(doc.get("_triggered_window_id")).tz_convert(STORE_TZ)
             if doc.get("_triggered_window_id") else None
         )
-        _triggered_window_side = doc.get("_triggered_window_side","buy")
+        # _triggered_window_side = doc.get("_triggered_window_side","buy")
 
         EntryCount = doc.get("EntryCount", 0)
         LastSide = doc.get("LastSide")
@@ -378,49 +378,9 @@ def update_fillcheck(trade_price: float):
 # Trigger logic
 # ==========================
 
-# def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
-#     global alerts, _triggered_window_id,_triggered_window_side, status, EntryCount, LastSide
-
-#     if not (
-#         is_valid_price(trade_price)
-#         and upper_bound is not None
-#         and lower_bound is not None
-#         and _bounds_candle_ts is not None
-#     ):
-#         return
-    
-
-#     trigger_time = datetime.fromtimestamp(trade_ts_ms / 1000, tz=KOLKATA_TZ)
-#     trigger_time_iso = trigger_time.isoformat()
-#     ts_dt = datetime.fromtimestamp(trade_ts_ms / 1000, tz=STORE_TZ)
-
-#     def _process_side(side_name, entry_val, friendly):
-#         nonlocal trigger_time_iso
-#         global EntryCount, LastSide, alerts, _triggered_window_id
-#         LastSide = side_name
-
-#         send_webhook(trigger_time_iso, entry_val, side_name, "entry")
-#         msg = f"{friendly} | {status}: {fmt_price(entry_val)} | Live {fmt_price(trade_price)} | Trigger {ts_dt.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')}"
-#         alerts.append(msg)
-#         alerts[:] = alerts[-50:]
-#         _triggered_window_id = _bounds_candle_ts
-#         _triggered_window_side = side_name
-#         save_state()
-
-#     if trade_price > upper_bound:
-#         if _triggered_window_id == _bounds_candle_ts and _triggered_window_side == "buy":
-#             return
-#         else : _process_side("buy", upper_bound, "LONG")
-#     elif trade_price < lower_bound:
-#         if _triggered_window_id == _bounds_candle_ts and _triggered_window_side == "sell":
-#             return
-#         else: _process_side("sell", lower_bound, "SHORT")
-
 def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
-    global alerts, _triggered_window_id, _triggered_window_side
-    global status, EntryCount, LastSide
+    global alerts, _triggered_window_id,_triggered_window_side, status, EntryCount, LastSide
 
-    # Preconditions: skip if required values not set
     if not (
         is_valid_price(trade_price)
         and upper_bound is not None
@@ -428,44 +388,82 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
         and _bounds_candle_ts is not None
     ):
         return
+    if _triggered_window_id == _bounds_candle_ts:
+        return
+    
 
-    # Convert timestamps
     trigger_time = datetime.fromtimestamp(trade_ts_ms / 1000, tz=KOLKATA_TZ)
     trigger_time_iso = trigger_time.isoformat()
     ts_dt = datetime.fromtimestamp(trade_ts_ms / 1000, tz=STORE_TZ)
 
-    def process_trigger(side: str, entry_val: float, friendly: str):
-        """Handles sending webhook + logging + updating state"""
-        nonlocal trigger_time_iso, ts_dt
-        global alerts, _triggered_window_id, _triggered_window_side, LastSide
+    def _process_side(side_name, entry_val, friendly):
+        nonlocal trigger_time_iso
+        global EntryCount, LastSide, alerts, _triggered_window_id
+        LastSide = side_name
 
-        LastSide = side
-        _triggered_window_id = _bounds_candle_ts
-        _triggered_window_side = side
-
-        # Send webhook
-        send_webhook(trigger_time_iso, entry_val, side, "entry")
-
-        # Prepare alert message
-        msg = (
-            f"{friendly} | {status}: {fmt_price(entry_val)} "
-            f"| Live {fmt_price(trade_price)} "
-            f"| Trigger {ts_dt.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')}"
-        )
+        send_webhook(trigger_time_iso, entry_val, side_name, "entry")
+        msg = f"{friendly} | {status}: {fmt_price(entry_val)} | Live {fmt_price(trade_price)} | Trigger {ts_dt.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')}"
         alerts.append(msg)
-        alerts[:] = alerts[-50:]  # keep only last 50
-
-        # Save state only when trigger fires
+        alerts[:] = alerts[-50:]
+        _triggered_window_id = _bounds_candle_ts
+        # _triggered_window_side = side_name
         save_state()
 
-    # === Trigger logic ===
     if trade_price > upper_bound:
-        if not (_triggered_window_id == _bounds_candle_ts and _triggered_window_side == "buy"):
-            process_trigger("buy", upper_bound, "LONG")
-
+        _process_side("buy", upper_bound, "LONG")
     elif trade_price < lower_bound:
-        if not (_triggered_window_id == _bounds_candle_ts and _triggered_window_side == "sell"):
-            process_trigger("sell", lower_bound, "SHORT")
+        _process_side("sell", lower_bound, "SHORT")
+
+# def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
+#     global alerts, _triggered_window_id, _triggered_window_side
+#     global status, EntryCount, LastSide
+
+#     # Preconditions: skip if required values not set
+#     if not (
+#         is_valid_price(trade_price)
+#         and upper_bound is not None
+#         and lower_bound is not None
+#         and _bounds_candle_ts is not None
+#     ):
+#         return
+
+#     # Convert timestamps
+#     trigger_time = datetime.fromtimestamp(trade_ts_ms / 1000, tz=KOLKATA_TZ)
+#     trigger_time_iso = trigger_time.isoformat()
+#     ts_dt = datetime.fromtimestamp(trade_ts_ms / 1000, tz=STORE_TZ)
+
+#     def process_trigger(side: str, entry_val: float, friendly: str):
+#         """Handles sending webhook + logging + updating state"""
+#         nonlocal trigger_time_iso, ts_dt
+#         global alerts, _triggered_window_id, _triggered_window_side, LastSide
+
+#         LastSide = side
+#         _triggered_window_id = _bounds_candle_ts
+#         _triggered_window_side = side
+
+#         # Send webhook
+#         send_webhook(trigger_time_iso, entry_val, side, "entry")
+
+#         # Prepare alert message
+#         msg = (
+#             f"{friendly} | {status}: {fmt_price(entry_val)} "
+#             f"| Live {fmt_price(trade_price)} "
+#             f"| Trigger {ts_dt.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')}"
+#         )
+#         alerts.append(msg)
+#         alerts[:] = alerts[-50:]  # keep only last 50
+
+#         # Save state only when trigger fires
+#         save_state()
+
+#     # === Trigger logic ===
+#     if trade_price > upper_bound:
+#         if not (_triggered_window_id == _bounds_candle_ts and _triggered_window_side == "buy"):
+#             process_trigger("buy", upper_bound, "LONG")
+
+#     elif trade_price < lower_bound:
+#         if not (_triggered_window_id == _bounds_candle_ts and _triggered_window_side == "sell"):
+#             process_trigger("sell", lower_bound, "SHORT")
 
 # ==========================
 # WebSocket handlers
