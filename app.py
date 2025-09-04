@@ -278,7 +278,7 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status
     pnl = 0.0
 
     if status == "exit":
-        if side == "sl": status = "sl"
+        if side == "sl": status = "entry"
         if entryprice is None:
             print("[WEBHOOK] Exit requested but no stored entryprice; ignoring pnl update.")
         else:
@@ -479,16 +479,16 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
 
     # === Trigger logic ===
     if trade_price > upper_bound:
-        if not (_triggered_window_id == _bounds_candle_ts and (status == "entry" or status == "sl")):
-            if _triggered_window_side == "buy" and (status == "exit" or status == "sl"):
+        if not (_triggered_window_id == _bounds_candle_ts and status == "entry"):
+            if _triggered_window_side == "buy" and status == "exit":
                 return
             process_trigger("buy", upper_bound, "LONG")
         elif not (_triggered_window_id == _bounds_candle_ts and _triggered_window_side == "buy" and status!="exit"):
             trigger_exit("sl")
 
     elif trade_price < lower_bound:
-        if not (_triggered_window_id == _bounds_candle_ts and (status == "entry" or status == "sl")):
-            if _triggered_window_side == "sell" and (status == "exit" or status == "sl"):
+        if not (_triggered_window_id == _bounds_candle_ts and status == "entry"):
+            if _triggered_window_side == "sell" and status == "exit":
                 return
             process_trigger("sell", lower_bound, "SHORT")
         elif not (_triggered_window_id == _bounds_candle_ts and _triggered_window_side == "buy" and status!="exit"):
