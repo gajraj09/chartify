@@ -278,7 +278,6 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status
     pnl = 0.0
 
     if status == "exit":
-        if side == "sl": status = "entry"
         if entryprice is None:
             print("[WEBHOOK] Exit requested but no stored entryprice; ignoring pnl update.")
         else:
@@ -457,25 +456,6 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
         # Save state only when trigger fires
         save_state()
         
-    def trigger_exit(side: str):
-        """Handles exit webhook + logging"""
-        try:
-            send_webhook(
-                ts_dt.astimezone(KOLKATA_TZ).strftime("%H:%M:%S"),
-                open_val,
-                side,
-                "exit",
-            )
-            msg = (
-                f"EXIT | Price: {fmt_price(open_val)} "
-                f"| Time: {ts_dt.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')} "
-                f"| PnL: {lastpnl}"
-            )
-            alerts.append(msg)
-            alerts[:] = alerts[-50:]
-        except Exception as e:
-            print("New candle webhook error:", e)
-        save_state()
 
     # === Trigger logic ===
     if trade_price > upper_bound:
@@ -483,16 +463,12 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
             if _triggered_window_side == "buy" and status == "exit":
                 return
             process_trigger("buy", upper_bound, "LONG")
-        elif not (_triggered_window_id == _bounds_candle_ts and _triggered_window_side == "buy" and status!="exit"):
-            trigger_exit("sl")
 
     elif trade_price < lower_bound:
         if not (_triggered_window_id == _bounds_candle_ts and status == "entry"):
             if _triggered_window_side == "sell" and status == "exit":
                 return
             process_trigger("sell", lower_bound, "SHORT")
-        elif not (_triggered_window_id == _bounds_candle_ts and _triggered_window_side == "buy" and status!="exit"):
-            trigger_exit("sl")
 
 # ==========================
 # WebSocket handlers
