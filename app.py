@@ -480,7 +480,7 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
     # === Trigger logic ===
     if trade_price > upper_bound:
         if not (_triggered_window_id == _bounds_candle_ts and (status == "entry" or status == "sl")):
-            if _triggered_window_side == "buy" and status == "exit":
+            if _triggered_window_side == "buy" and (status == "exit" or status == "sl"):
                 return
             process_trigger("buy", upper_bound, "LONG")
         elif not (_triggered_window_id == _bounds_candle_ts and _triggered_window_side == "buy" and status!="exit"):
@@ -488,7 +488,7 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
 
     elif trade_price < lower_bound:
         if not (_triggered_window_id == _bounds_candle_ts and (status == "entry" or status == "sl")):
-            if _triggered_window_side == "sell" and status == "exit":
+            if _triggered_window_side == "sell" and (status == "exit" or status == "sl"):
                 return
             process_trigger("sell", lower_bound, "SHORT")
         elif not (_triggered_window_id == _bounds_candle_ts and _triggered_window_side == "buy" and status!="exit"):
