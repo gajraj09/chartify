@@ -33,7 +33,7 @@ LENGTH = 1  # number of LAST CLOSED candles to compute bounds
 # LENGTH = 2  # number of LAST CLOSED candles to compute bounds
 
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
-DB_NAME = "trading_bot_eth"
+DB_NAME = "trading_bot_eth_without_repeat"
 COLLECTION_STATE = "bot_state"
 
 # ==========================
@@ -411,8 +411,8 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
 
     if trade_price > upper_bound:
         _process_side("buy", upper_bound, "LONG")
-    elif trade_price < lower_bound:
-        _process_side("sell", lower_bound, "SHORT")
+    # elif trade_price < lower_bound:
+    #     _process_side("sell", lower_bound, "SHORT")
 
 # def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
 #     global alerts, _triggered_window_id, _triggered_window_side
@@ -475,7 +475,7 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
 # ==========================
 
 def on_message(ws, message):
-    global candles, live_price, last_valid_price,status,lastpnl
+    global candles, live_price, last_valid_price,status,lastpnl,_triggered_window_id
     try:
         data = json.loads(message)
         stream = data.get("stream")
@@ -518,6 +518,8 @@ def on_message(ws, message):
 
                 # ---------- OPTIONAL: Send webhook on new candle open (EXIT) ----------
                 if status != "exit":
+                    trade_ts_ms1 = int(payload.get("T") or payload.get("E") or time.time() * 1000)
+                     _triggered_window_id = trade_ts_ms1
                     try:
                         send_webhook(ts_dt.astimezone(KOLKATA_TZ).strftime("%H:%M:%S"), open_val, "buy", "exit")
                         msg = f"EXIT | Price: {fmt_price(open_val)} | Time: {ts_dt.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')}| PnL: {lastpnl}"
