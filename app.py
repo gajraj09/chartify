@@ -134,6 +134,7 @@ def save_state():
             "_bounds_candle_ts": _bounds_candle_ts.isoformat() if _bounds_candle_ts else None,
             "_triggered_window_id": _triggered_window_id.isoformat() if _triggered_window_id else None,
             "_triggered_window_side": _triggered_window_side,
+            "_last_exit_lock":_last_exit_lock,
             "EntryCount": int(EntryCount),
             "LastSide": LastSide,
             "LastLastSide": LastLastSide,
@@ -183,6 +184,7 @@ def load_state():
             if doc.get("_triggered_window_id") else None
         )
         _triggered_window_side = doc.get("_triggered_window_side","buy")
+        _last_exit_lock = doc.get("_last_exit_lock","unlock")
 
         EntryCount = doc.get("EntryCount", 0)
         LastSide = doc.get("LastSide")
@@ -485,8 +487,8 @@ def on_message(ws, message):
                         alerts[:] = alerts[-50:]
                     except Exception as e:
                         print("New candle webhook error:", e)
-                    save_state()
                 
+                save_state()
 
             else:
                 idx = candles.index[-1]
