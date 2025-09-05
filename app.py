@@ -57,6 +57,7 @@ lower_bound = None
 _bounds_candle_ts = None  # UTC datetime of the candle used to compute bounds
 _triggered_window_id = None
 _triggered_window_side = None
+_last_exit_lock = None
 
 EntryCount = 0
 LastSide = None
@@ -379,7 +380,7 @@ def update_fillcheck(trade_price: float):
 
 def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
     global alerts, _triggered_window_id, _triggered_window_side
-    global status, EntryCount, LastSide
+    global status, EntryCount, LastSide,_last_exit_lock
 
     # Preconditions: skip if required values not set
     if not (
@@ -423,14 +424,15 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
     # === Trigger logic ===
     if trade_price > upper_bound:
         if _triggered_window_id != _bounds_candle_ts:
-            process_trigger("buy", upper_bound, "LONG")
+            if _last_exit_lock == "unlock":
+                process_trigger("buy", upper_bound, "LONG")
 
 # ==========================
 # WebSocket handlers
 # ==========================
 
 def on_message(ws, message):
-    global candles, live_price, last_valid_price,status,lastpnl,_triggered_window_id
+    global candles, live_price, last_valid_price,status,lastpnl,_triggered_window_id,_last_exit_lock
     try:
         data = json.loads(message)
         stream = data.get("stream")
@@ -472,9 +474,10 @@ def on_message(ws, message):
                 candles = pd.concat([candles, pd.DataFrame([new_row])], ignore_index=True)
 
                 # ---------- OPTIONAL: Send webhook on new candle open (EXIT) ----------
+                if status == "exit":
+                    _last_exit_lock = "unlock"
                 if status != "exit":
-                    trade_ts_ms1 = int(payload.get("T") or payload.get("E") or time.time() * 1000)
-                    _triggered_window_id = trade_ts_ms1
+                    _last_exit_lock = "lock"
                     try:
                         send_webhook(ts_dt.astimezone(KOLKATA_TZ).strftime("%H:%M:%S"), open_val, "buy", "exit")
                         msg = f"EXIT | Price: {fmt_price(open_val)} | Time: {ts_dt.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')}| PnL: {lastpnl}"
@@ -483,6 +486,7 @@ def on_message(ws, message):
                     except Exception as e:
                         print("New candle webhook error:", e)
                     save_state()
+                
 
             else:
                 idx = candles.index[-1]
