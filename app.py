@@ -422,9 +422,7 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
 
     # === Trigger logic ===
     if trade_price > upper_bound:
-        if not (_triggered_window_id == _bounds_candle_ts and status == "entry"):
-            if _triggered_window_side == "buy" and status == "exit":
-                return
+        if _triggered_window_id != _bounds_candle_ts:
             process_trigger("buy", upper_bound, "LONG")
 
 # ==========================
@@ -475,6 +473,8 @@ def on_message(ws, message):
 
                 # ---------- OPTIONAL: Send webhook on new candle open (EXIT) ----------
                 if status != "exit":
+                    trade_ts_ms1 = int(payload.get("T") or payload.get("E") or time.time() * 1000)
+                    _triggered_window_id = trade_ts_ms1
                     try:
                         send_webhook(ts_dt.astimezone(KOLKATA_TZ).strftime("%H:%M:%S"), open_val, "buy", "exit")
                         msg = f"EXIT | Price: {fmt_price(open_val)} | Time: {ts_dt.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')}| PnL: {lastpnl}"
