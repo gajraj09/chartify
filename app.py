@@ -720,7 +720,7 @@ from pymongo import MongoClient
 # Config
 # ==========================
 SYMBOL = "ethusdc"       # keep lowercase for websocket streams
-INTERVAL = "1m"
+INTERVAL = "3m"
 CANDLE_LIMIT = 10
 PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "mongodb+srv://gsr939988_db_user:ROYfY6z5kxUumq5i@tradingbot.lvnxj3a.mongodb.net/?retryWrites=true&w=majority&appName=TradingBot")
