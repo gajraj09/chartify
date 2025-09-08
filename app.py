@@ -719,11 +719,11 @@ from pymongo import MongoClient
 # ==========================
 # Config
 # ==========================
-SYMBOL = "ethusdc"       # keep lowercase for websocket streams
+SYMBOL = "xrpusdc"       # keep lowercase for websocket streams
 INTERVAL = "1m"
 CANDLE_LIMIT = 10
 PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "mongodb+srv://gsr939988_db_user:ROYfY6z5kxUumq5i@tradingbot.lvnxj3a.mongodb.net/?retryWrites=true&w=majority&appName=TradingBot")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://binance-65gz.onrender.com/web")
 
 # ====For ETHUSDC 15 Min Chart
 LENGTH = 1  # number of LAST CLOSED candles to compute bounds
