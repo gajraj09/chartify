@@ -18,7 +18,7 @@ from pymongo import MongoClient
 # Config
 # ==========================
 SYMBOL = "ethusdc"       # keep lowercase for websocket streams
-INTERVAL = "3m"
+INTERVAL = "1m"
 CANDLE_LIMIT = 10
 PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://binance-65gz.onrender.com/webhook")
