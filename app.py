@@ -481,7 +481,7 @@ def on_message(ws, message):
                 if status != "exit":
                     _last_exit_lock = "lock"
                     try:
-                        send_webhook(ts_dt.astimezone(KOLKATA_TZ).strftime("%H:%M:%S"), open_val, "buy", "exit")
+                        send_webhook(ts_dt.astimezone(KOLKATA_TZ).strftime("%H:%M:%S"), open_val, "sell", "exit")
                         msg = f"EXIT | Price: {fmt_price(open_val)} | Time: {ts_dt.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')}| PnL: {lastpnl}"
                         alerts.append(msg)
                         alerts[:] = alerts[-50:]
