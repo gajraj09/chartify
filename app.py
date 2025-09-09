@@ -691,7 +691,7 @@ def update_display(_):
         html.Div(f"ExitFillCount: {exitfillcount}"),
         html.Div(f"TotalTrades: {totaltradecount}"),
         html.Div(f"UnfilledPnL: {fmt_price(unfilledpnl)}"),
-    ]
+     ]
 
     ohlc_html = []
     for idx, row in candles.iterrows():
