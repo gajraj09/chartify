@@ -422,12 +422,14 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
         # Save state only when trigger fires
         save_state()
         
-
-    # === Trigger logic ===
-    if trade_price > upper_bound:
-        if _triggered_window_id != _bounds_candle_ts:
+    if _triggered_window_id != _bounds_candle_ts:
             if _last_exit_lock == "unlock":
                 process_trigger("buy", upper_bound, "LONG")
+    # === Trigger logic ===
+    # if trade_price > upper_bound:
+    #     if _triggered_window_id != _bounds_candle_ts:
+    #         if _last_exit_lock == "unlock":
+    #             process_trigger("buy", upper_bound, "LONG")
 
 # ==========================
 # WebSocket handlers
