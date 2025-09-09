@@ -22,7 +22,7 @@ SYMBOL = "ethusdc"       # keep lowercase for websocket streams
 INTERVAL = "15m"
 CANDLE_LIMIT = 10
 PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://binance-65gz.onrender.com/web")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://binance-65gz.onrender.com/webhook")
 
 # ====For ETHUSDC 15 Min Chart
 LENGTH = 1  # number of LAST CLOSED candles to compute bounds
@@ -271,6 +271,22 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status
     global EntryCount, LastSide, status, entryprice, running_pnl, initial_balance, lastpnl
     global fillcheck, totaltradecount, unfilledpnl, LastLastSide
 
+    if status_fun == "enter":
+        try:
+            payload = {
+                "symbol": SYMBOL.upper(),
+                "side": "buy",
+                "quantity": 0.006,
+                "price": entry_price_in,
+                "status": "entry",
+                "secret": "gajraj09",
+            }
+            requests.post(WEBHOOK_URL, json=payload, timeout=5)
+            print("Sent payload:", payload)
+        except Exception as e:
+            print("Webhook error:", e)
+        return
+
     secret = "gajraj09"
     quantity = 0.006
 
@@ -424,7 +440,7 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
         
     if _triggered_window_id != _bounds_candle_ts:
             if _last_exit_lock == "unlock":
-                send_webhook(trigger_time_iso, upper_bound, "buy", "entry")
+                send_webhook(trigger_time_iso, upper_bound, "buy", "enter")
     # === Trigger logic ===
     if trade_price > upper_bound:
         if _triggered_window_id != _bounds_candle_ts:
