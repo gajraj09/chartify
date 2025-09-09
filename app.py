@@ -310,6 +310,19 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status
         if fillcheck == 1:
             unfilledpnl += pnl
         fillcheck = 0
+        try:
+        payload = {
+            "symbol": SYMBOL.upper(),
+            "side": side,
+            "quantity": quantity,
+            "price": entry_price_in,
+            "status": status,
+            "secret": secret,
+        }
+        requests.post(WEBHOOK_URL, json=payload, timeout=5)
+        print("Sent payload:", payload)
+    except Exception as e:
+        print("Webhook error:", e)
     else:  # status == "entry"
         if entryprice is not None:
             # Close any previous implicit position first for accounting
@@ -324,21 +337,7 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status
         totaltradecount += 1
         fillcheck = 1
     LastLastSide = LastSide
-
-
-    try:
-        payload = {
-            "symbol": SYMBOL.upper(),
-            "side": side,
-            "quantity": quantity,
-            "price": entry_price_in,
-            "status": status,
-            "secret": secret,
-        }
-        requests.post(WEBHOOK_URL, json=payload, timeout=5)
-        print("Sent payload:", payload)
-    except Exception as e:
-        print("Webhook error:", e)
+    
     save_state()
 
 
@@ -427,7 +426,7 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
         _triggered_window_side = side
 
         # Send webhook
-        # send_webhook(trigger_time_iso, entry_val, side, "entry")
+        send_webhook(trigger_time_iso, entry_val, side, "entry")
 
         # Prepare alert message
         msg = (
@@ -501,7 +500,7 @@ def on_message(ws, message):
                 if status == "exit":
                     _last_exit_lock = "unlock"
                     _condition_lock = 0
-                if status != "exit":
+                elif status == "entry":
                     _last_exit_lock = "lock"
                     try:
                         send_webhook(ts_dt.astimezone(KOLKATA_TZ).strftime("%H:%M:%S"), open_val, "sell", "exit")
