@@ -25,7 +25,7 @@ SYMBOL = "ethusdc"       # keep lowercase for websocket streams
 INTERVAL = "15m"
 CANDLE_LIMIT = 10
 PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://binance-65gz.onrender.com/webhook")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://binance-65gz.onrender.com/webh")
 
 # ====For ETHUSDC 15 Min Chart
 LENGTH = 1  # number of LAST CLOSED candles to compute bounds
