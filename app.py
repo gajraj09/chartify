@@ -408,7 +408,7 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
         _triggered_window_side = side
 
         # Send webhook
-        send_webhook(trigger_time_iso, entry_val, side, "entry")
+        # send_webhook(trigger_time_iso, entry_val, side, "entry")
 
         # Prepare alert message
         msg = (
@@ -424,12 +424,12 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
         
     if _triggered_window_id != _bounds_candle_ts:
             if _last_exit_lock == "unlock":
-                process_trigger("buy", upper_bound, "LONG")
+                send_webhook(trigger_time_iso, upper_bound, "buy", "entry")
     # === Trigger logic ===
-    # if trade_price > upper_bound:
-    #     if _triggered_window_id != _bounds_candle_ts:
-    #         if _last_exit_lock == "unlock":
-    #             process_trigger("buy", upper_bound, "LONG")
+    if trade_price > upper_bound:
+        if _triggered_window_id != _bounds_candle_ts:
+            if _last_exit_lock == "unlock":
+                process_trigger("buy", upper_bound, "LONG")
 
 # ==========================
 # WebSocket handlers
