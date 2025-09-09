@@ -311,18 +311,18 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status
             unfilledpnl += pnl
         fillcheck = 0
         try:
-        payload = {
-            "symbol": SYMBOL.upper(),
-            "side": side,
-            "quantity": quantity,
-            "price": entry_price_in,
-            "status": status,
-            "secret": secret,
-        }
-        requests.post(WEBHOOK_URL, json=payload, timeout=5)
-        print("Sent payload:", payload)
-    except Exception as e:
-        print("Webhook error:", e)
+            payload = {
+                "symbol": SYMBOL.upper(),
+                "side": side,
+                "quantity": quantity,
+                "price": entry_price_in,
+                "status": status,
+                "secret": secret,
+            }
+            requests.post(WEBHOOK_URL, json=payload, timeout=5)
+            print("Sent payload:", payload)
+        except Exception as e:
+            print("Webhook error:", e)
     else:  # status == "entry"
         if entryprice is not None:
             # Close any previous implicit position first for accounting
