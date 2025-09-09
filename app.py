@@ -684,14 +684,14 @@ def update_display(_):
     #     html.Div(f"TotalTrades: {totaltradecount}"),
     #     html.Div(f"UnfilledPnL: {fmt_price(unfilledpnl)}"),
     # ]
-     stats_html = [
+    stats_html = [
         html.Div(f"FillCheck: {fillcheck}"),
         html.Div(f"FillCount: {fillcount}"),
         html.Div(f"ExitFillCheck: {exitfillcheck}"),
         html.Div(f"ExitFillCount: {exitfillcount}"),
         html.Div(f"TotalTrades: {totaltradecount}"),
         html.Div(f"UnfilledPnL: {fmt_price(unfilledpnl)}"),
-     ]
+    ]
 
     ohlc_html = []
     for idx, row in candles.iterrows():
