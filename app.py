@@ -64,6 +64,9 @@ LastSide = None
 LastLastSide = "buy"
 status = None
 
+#condition_lock
+_condition_lock = 0
+
 # Order filling data
 fillcheck = 0
 fillcount = 0
@@ -398,7 +401,7 @@ def update_fillcheck(trade_price: float):
 
 def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
     global alerts, _triggered_window_id, _triggered_window_side
-    global status, EntryCount, LastSide,_last_exit_lock
+    global status, EntryCount, LastSide,_last_exit_lock,_condition_lock
 
     # Preconditions: skip if required values not set
     if not (
@@ -438,8 +441,9 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
         # Save state only when trigger fires
         save_state()
         
-    if _triggered_window_id != _bounds_candle_ts:
+    if _triggered_window_id != _bounds_candle_ts and _condition_lock == 0:
             if _last_exit_lock == "unlock":
+                _condition_lock = 1
                 send_webhook(trigger_time_iso, upper_bound, "buy", "enter")
     # === Trigger logic ===
     if trade_price > upper_bound:
@@ -452,7 +456,7 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
 # ==========================
 
 def on_message(ws, message):
-    global candles, live_price, last_valid_price,status,lastpnl,_triggered_window_id,_last_exit_lock
+    global candles, live_price, last_valid_price,status,lastpnl,_triggered_window_id,_last_exit_lock,_condition_lock
     try:
         data = json.loads(message)
         stream = data.get("stream")
@@ -496,6 +500,7 @@ def on_message(ws, message):
                 # ---------- OPTIONAL: Send webhook on new candle open (EXIT) ----------
                 if status == "exit":
                     _last_exit_lock = "unlock"
+                    _condition_lock = 0
                 if status != "exit":
                     _last_exit_lock = "lock"
                     try:
