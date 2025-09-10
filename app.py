@@ -267,7 +267,7 @@ def fetch_initial_candles():
 
 
 def calculate_pnl(entry_price: float, closing_price: float, side: str) -> float:
-    quantity = 0.005  # fixed quantity
+    quantity = 0.03  # fixed quantity
     if side == "buy":
         return (closing_price - entry_price) * quantity
     elif side == "sell":
@@ -285,7 +285,7 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status
             payload = {
                 "symbol": SYMBOL.upper(),
                 "side": "buy",
-                "quantity": 0.005,
+                "quantity": 0.03,
                 "price": entry_price_in,
                 "status": "entry",
                 "secret": "gajraj09",
@@ -297,7 +297,7 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status
         return
 
     secret = "gajraj09"
-    quantity = 0.005
+    quantity = 0.03
 
     status = status_fun
     pnl = 0.0
