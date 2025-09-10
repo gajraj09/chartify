@@ -76,9 +76,9 @@ fillcount = 0
 totaltradecount = 0
 unfilledpnl = 0.0
 lastpnl = 0
-exitfillcheck=0
-exitfillcount=0
-exitfilltotal=0
+# exitfillcheck=0
+# exitfillcount=0
+# exitfilltotal=0
 
 
 # ==========================
@@ -267,7 +267,7 @@ def fetch_initial_candles():
 
 
 def calculate_pnl(entry_price: float, closing_price: float, side: str) -> float:
-    quantity = 0.006  # fixed quantity
+    quantity = 0.005  # fixed quantity
     if side == "buy":
         return (closing_price - entry_price) * quantity
     elif side == "sell":
@@ -285,7 +285,7 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status
             payload = {
                 "symbol": SYMBOL.upper(),
                 "side": "buy",
-                "quantity": 0.006,
+                "quantity": 0.005,
                 "price": entry_price_in,
                 "status": "entry",
                 "secret": "gajraj09",
@@ -317,8 +317,8 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status
         if fillcheck == 1:
             unfilledpnl += pnl
         fillcheck = 0
-        exitfillcheck = 1   # <--- start tracking exit fills
-        exitfilltotal += 1   # <--- start tracking exit fills
+        # exitfillcheck = 1   # <--- start tracking exit fills
+        # exitfilltotal += 1   # <--- start tracking exit fills
         try:
             payload = {
                 "symbol": SYMBOL.upper(),
@@ -377,38 +377,14 @@ def recompute_bounds_on_close():
 # Fillcheck update on every tick
 # ==========================
 
-# def update_fillcheck(trade_price: float):
-#     global fillcheck, fillcount, entryprice, LastSide, status, totaltradecount, unfilledpnl
-
-#     if entryprice is None or fillcheck == 0:
-#         return
-#     was_fill = False
-#     if status == "entry":
-#         if LastSide == "buy" and trade_price <= entryprice:  # <= to allow exact touch
-#             fillcheck = 0
-#             fillcount += 1
-#             was_fill = True
-#         elif LastSide == "sell" and trade_price >= entryprice:
-#             fillcheck = 0
-#             fillcount += 1
-#             was_fill = True
-#     elif status == "exit":
-#         # Exit fill handling can be more sophisticated if you post exit orders
-#         fillcheck = 0
-#         was_fill = True
-#     if was_fill:
-#         save_state()
-
 def update_fillcheck(trade_price: float):
-    global fillcheck, fillcount, entryprice, LastSide, status
-    global totaltradecount, unfilledpnl, exitfillcheck, exitfillcount
+    global fillcheck, fillcount, entryprice, LastSide, status, totaltradecount, unfilledpnl
 
-    if entryprice is None:
+    if entryprice is None or fillcheck == 0:
         return
-
     was_fill = False
-    if status == "entry" and fillcheck == 1:
-        if LastSide == "buy" and trade_price <= entryprice:  # touched
+    if status == "entry":
+        if LastSide == "buy" and trade_price <= entryprice:  # <= to allow exact touch
             fillcheck = 0
             fillcount += 1
             was_fill = True
@@ -416,20 +392,44 @@ def update_fillcheck(trade_price: float):
             fillcheck = 0
             fillcount += 1
             was_fill = True
-
-    elif status == "exit" and exitfillcheck == 1:
-        # Exit fill condition: reached exit price
-        if LastSide == "buy" and trade_price >= entryprice:  # exited long
-            exitfillcheck = 0
-            exitfillcount += 1
-            was_fill = True
-        elif LastSide == "sell" and trade_price <= entryprice:  # exited short
-            exitfillcheck = 0
-            exitfillcount += 1
-            was_fill = True
-
+    elif status == "exit":
+        # Exit fill handling can be more sophisticated if you post exit orders
+        fillcheck = 0
+        was_fill = True
     if was_fill:
         save_state()
+
+# def update_fillcheck(trade_price: float):
+#     global fillcheck, fillcount, entryprice, LastSide, status
+#     global totaltradecount, unfilledpnl, exitfillcheck, exitfillcount
+
+#     if entryprice is None:
+#         return
+
+#     was_fill = False
+#     if status == "entry" and fillcheck == 1:
+#         if LastSide == "buy" and trade_price <= entryprice:  # touched
+#             fillcheck = 0
+#             fillcount += 1
+#             was_fill = True
+#         elif LastSide == "sell" and trade_price >= entryprice:
+#             fillcheck = 0
+#             fillcount += 1
+#             was_fill = True
+
+#     elif status == "exit" and exitfillcheck == 1:
+#         # Exit fill condition: reached exit price
+#         if LastSide == "buy" and trade_price >= entryprice:  # exited long
+#             exitfillcheck = 0
+#             exitfillcount += 1
+#             was_fill = True
+#         elif LastSide == "sell" and trade_price <= entryprice:  # exited short
+#             exitfillcheck = 0
+#             exitfillcount += 1
+#             was_fill = True
+
+#     if was_fill:
+#         save_state()
 
 
 # ==========================
@@ -481,8 +481,8 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
         save_state()
         
     if _triggered_window_id != _bounds_candle_ts and _condition_lock == 0:
-            if _last_exit_lock == "unlock":
-                _condition_lock = 1
+        if _last_exit_lock == "unlock":
+            _condition_lock = 1
                 send_webhook(trigger_time_iso, upper_bound, "buy", "enter")
     # === Trigger logic ===
     if trade_price > upper_bound:
@@ -678,20 +678,20 @@ def update_display(_):
     lp = f"Live Price: {fmt_price(live_price)}"
     bal = f"Balance: {fmt_price(initial_balance)}"
 
-    # stats_html = [
-    #     html.Div(f"FillCheck: {fillcheck}"),
-    #     html.Div(f"FillCount: {fillcount}"),
-    #     html.Div(f"TotalTrades: {totaltradecount}"),
-    #     html.Div(f"UnfilledPnL: {fmt_price(unfilledpnl)}"),
-    # ]
     stats_html = [
         html.Div(f"FillCheck: {fillcheck}"),
         html.Div(f"FillCount: {fillcount}"),
-        html.Div(f"ExitFillCheck: {exitfillcheck}"),
-        html.Div(f"ExitFillCount: {exitfillcount}"),
         html.Div(f"TotalTrades: {totaltradecount}"),
         html.Div(f"UnfilledPnL: {fmt_price(unfilledpnl)}"),
     ]
+    # stats_html = [
+    #     html.Div(f"FillCheck: {fillcheck}"),
+    #     html.Div(f"FillCount: {fillcount}"),
+    #     html.Div(f"ExitFillCheck: {exitfillcheck}"),
+    #     html.Div(f"ExitFillCount: {exitfillcount}"),
+    #     html.Div(f"TotalTrades: {totaltradecount}"),
+    #     html.Div(f"UnfilledPnL: {fmt_price(unfilledpnl)}"),
+    # ]
 
     ohlc_html = []
     for idx, row in candles.iterrows():
