@@ -22,7 +22,7 @@ from pymongo import MongoClient
 # Config
 # ==========================
 SYMBOL = "ethusdc"       # keep lowercase for websocket streams
-INTERVAL = "15m"
+INTERVAL = "1m"
 CANDLE_LIMIT = 10
 PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://binance-65gz.onrender.com/webh")
@@ -33,7 +33,7 @@ LENGTH = 1  # number of LAST CLOSED candles to compute bounds
 # LENGTH = 2  # number of LAST CLOSED candles to compute bounds
 
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
-DB_NAME = "trading_bot_eth_longonly"
+DB_NAME = "trading_bot_eth_1min"
 COLLECTION_STATE = "bot_state"
 
 # ==========================
