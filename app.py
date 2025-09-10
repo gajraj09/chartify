@@ -483,7 +483,7 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
     if _triggered_window_id != _bounds_candle_ts and _condition_lock == 0:
         if _last_exit_lock == "unlock":
             _condition_lock = 1
-                send_webhook(trigger_time_iso, upper_bound, "buy", "enter")
+            send_webhook(trigger_time_iso, upper_bound, "buy", "enter")
     # === Trigger logic ===
     if trade_price > upper_bound:
         if _triggered_window_id != _bounds_candle_ts:
