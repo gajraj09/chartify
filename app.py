@@ -143,7 +143,7 @@ def save_state():
             "_bounds_candle_ts": _bounds_candle_ts.isoformat() if _bounds_candle_ts else None,
             "_triggered_window_id": _triggered_window_id.isoformat() if _triggered_window_id else None,
             "_triggered_window_side": _triggered_window_side,
-            "_last_exit_lock":_last_exit_lock,
+            "_last_exit_lock":_last_exit_lock if _last_exit_lock else "None",
             "EntryCount": int(EntryCount),
             "LastSide": LastSide,
             "LastLastSide": LastLastSide,
