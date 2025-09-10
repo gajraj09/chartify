@@ -33,7 +33,7 @@ LENGTH = 1  # number of LAST CLOSED candles to compute bounds
 # LENGTH = 2  # number of LAST CLOSED candles to compute bounds
 
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
-DB_NAME = "trading_bot_eth_1min"
+DB_NAME = "trading_bot_eth_2min"
 COLLECTION_STATE = "bot_state"
 
 # ==========================
