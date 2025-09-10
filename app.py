@@ -60,7 +60,7 @@ lower_bound = None
 _bounds_candle_ts = None  # UTC datetime of the candle used to compute bounds
 _triggered_window_id = None
 _triggered_window_side = None
-_last_exit_lock = None
+_last_exit_lock = "unlock"
 
 EntryCount = 0
 LastSide = None
@@ -143,7 +143,7 @@ def save_state():
             "_bounds_candle_ts": _bounds_candle_ts.isoformat() if _bounds_candle_ts else None,
             "_triggered_window_id": _triggered_window_id.isoformat() if _triggered_window_id else None,
             "_triggered_window_side": _triggered_window_side,
-            "_last_exit_lock":_last_exit_lock if _last_exit_lock else "None",
+            "_last_exit_lock":_last_exit_lock,
             "EntryCount": int(EntryCount),
             "LastSide": LastSide,
             "LastLastSide": LastLastSide,
@@ -480,10 +480,10 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
         # Save state only when trigger fires
         save_state()
         
-    # if _triggered_window_id != _bounds_candle_ts and _condition_lock == 0:
-    #     if _last_exit_lock == "unlock":
-    #         _condition_lock = 1
-    #         send_webhook(trigger_time_iso, upper_bound, "buy", "enter")
+    if _triggered_window_id != _bounds_candle_ts and _condition_lock == 0:
+        if _last_exit_lock == "unlock":
+            _condition_lock = 1
+            send_webhook(trigger_time_iso, upper_bound, "buy", "enter")
     # === Trigger logic ===
     if trade_price > upper_bound:
         if _triggered_window_id != _bounds_candle_ts:
