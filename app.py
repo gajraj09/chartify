@@ -540,7 +540,7 @@ def on_message(ws, message):
                 if status == "exit":
                     _last_exit_lock = "unlock"
                     _condition_lock = 0
-                elif status == "entry":
+                if status != "exit":
                     _last_exit_lock = "lock"
                     try:
                         send_webhook(ts_dt.astimezone(KOLKATA_TZ).strftime("%H:%M:%S"), open_val, "sell", "exit")
