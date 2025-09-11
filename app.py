@@ -285,7 +285,7 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status
             payload = {
                 "symbol": SYMBOL.upper(),
                 "side": "buy",
-                "quantity": 0.03,
+                "quantity": 0.005,
                 "price": entry_price_in,
                 "status": "entry",
                 "secret": "gajraj09",
