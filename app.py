@@ -21,7 +21,7 @@ from pymongo import MongoClient
 # ==========================
 # Config
 # ==========================
-SYMBOL = "xrpusdc"       # keep lowercase for websocket streams
+SYMBOL = "ethusdc"       # keep lowercase for websocket streams
 INTERVAL = "15m"
 CANDLE_LIMIT = 10
 PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
