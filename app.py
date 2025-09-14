@@ -1,786 +1,165 @@
-# (Full script - modified to implement Volty Expan Close Long-only strategy)
 import json
 import os
-import time
-import threading
-from datetime import datetime, timezone, timedelta
-
-import pandas as pd
-import requests
 import websocket
+import pandas as pd
+from datetime import datetime
 import dash
 from dash import dcc, html
 from dash.dependencies import Input, Output
-from flask import Flask, request, jsonify
-from pymongo import MongoClient
+import threading
 
 # ==========================
-# Config (tweak here)
+# Config
 # ==========================
-SYMBOL = "ethusdc"       # keep lowercase for websocket streams
+SYMBOL = "ethusdc"
 INTERVAL = "5m"
-CANDLE_LIMIT = 50         # needs to be large enough to compute ATR reliably
-PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://binance-65gz.onrender.com/web")
+WS_URL = f"wss://fstream.binance.com/ws/{SYMBOL}@kline_{INTERVAL}"
 
-# === Strategy params (change to your preference) ===
-ATR_LENGTH = 1           # lookback for ATR (use >=1). 5 is reasonable.
-ATR_MULT = 0.1          # ATR multiplier
-SLIPPAGE_TICKS = 1       # exit slippage in ticks
-TICK_SIZE = 0.01         # ETHUSDC tick size (adjust if needed)
-
-# ====For channel bounds (keeps earlier behaviour)
-LENGTH = 3  # number of LAST CLOSED candles to compute channel bounds
-
-MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
-DB_NAME = "trading_bot_eth_atr"
-COLLECTION_STATE = "bot_state"
+LENGTH = 1           # ATR length
+NUM_ATRS = 0.1      # ATR multiplier
+SLIPPAGE_TICKS = 1   # slippage (ticks)
 
 # ==========================
-# Timezones
+# Global state
 # ==========================
-KOLKATA_TZ = timezone(timedelta(hours=5, minutes=30))
-STORE_TZ = timezone.utc
-
-# ==========================
-# Globals
-# ==========================
-candles = pd.DataFrame(columns=["time", "Open", "High", "Low", "Close"])  # 'time' is UTC-aware
-live_price = None
-last_valid_price = None
-alerts = []
-
-initial_balance = 10.0
-entryprice = None
-running_pnl = 0.0
-
-upper_bound = None
-lower_bound = None
-_bounds_candle_ts = None  # UTC datetime of the candle used to compute bounds
-_triggered_window_id = None
-_triggered_window_side = None
-_last_exit_lock = None
-
-EntryCount = 0
-LastSide = None
-LastLastSide = "buy"
-status = None
-
-# Order filling data
-fillcheck = 0
-fillcount = 0
-totaltradecount = 0
-unfilledpnl = 0.0
-lastpnl = 0
-
-# Strategy levels (computed)
-long_entry_price = None
-long_exit_price = None
-last_atr = None
+candles = pd.DataFrame(columns=["time", "open", "high", "low", "close"])
+last_alert = ""
+current_candle_time = None
+triggered = {"entry": False, "exit": False}  # reset every candle
 
 # ==========================
-# MongoDB Setup
+# ATR calculation
 # ==========================
-mongo_client = MongoClient(MONGO_URI)
-db = mongo_client[DB_NAME]
-state_col = db[COLLECTION_STATE]
-
-
-def _serialize_candles(df: pd.DataFrame):
-    """Return list[dict] with 'time' as ISO strings for storage."""
-    if df is None or df.empty:
-        return []
-    tmp = df.copy()
-
-    def _iso_safe(x):
-        if pd.isna(x):
-            return None
-        if isinstance(x, str):
-            return x
-        if getattr(x, "tzinfo", None) is None:
-            x = x.replace(tzinfo=STORE_TZ)
-        return x.isoformat()
-
-    tmp["time"] = tmp["time"].apply(_iso_safe)
-    return tmp.to_dict(orient="records")
-
-
-def _deserialize_candles(records):
-    """Turn stored records (with time iso) into DataFrame with timezone-aware datetimes (UTC)."""
-    if not records:
-        return pd.DataFrame(columns=["time", "Open", "High", "Low", "Close"])
-    df = pd.DataFrame(records)
-    if "time" in df.columns:
-        df["time"] = pd.to_datetime(df["time"], utc=True)
-        df["time"] = df["time"].dt.tz_convert(STORE_TZ)
+def calculate_atr(df, length):
+    df["H-L"] = df["high"] - df["low"]
+    df["H-C"] = abs(df["high"] - df["close"].shift())
+    df["L-C"] = abs(df["low"] - df["close"].shift())
+    df["TR"] = df[["H-L", "H-C", "L-C"]].max(axis=1)
+    df["ATR"] = df["TR"].rolling(length).mean()
     return df
 
-
-def save_state():
-    """Save global state + candles + alerts to MongoDB."""
-    global candles, live_price, last_valid_price, alerts
-    global initial_balance, entryprice, running_pnl
-    global upper_bound, lower_bound, _bounds_candle_ts, _triggered_window_id
-    global EntryCount, LastSide, LastLastSide, status
-    global fillcheck, fillcount, totaltradecount, unfilledpnl
-    global long_entry_price, long_exit_price, last_atr
-
-    try:
-        state = {
-            "_id": "bot_state",
-            "candles": _serialize_candles(candles),
-            "live_price": float(live_price) if is_valid_price(live_price) else None,
-            "last_valid_price": float(last_valid_price) if is_valid_price(last_valid_price) else None,
-            "alerts": alerts[-100:],
-            "initial_balance": float(initial_balance),
-            "entryprice": float(entryprice) if is_valid_price(entryprice) else None,
-            "running_pnl": float(running_pnl),
-            "upper_bound": float(upper_bound) if is_valid_price(upper_bound) else None,
-            "lower_bound": float(lower_bound) if is_valid_price(lower_bound) else None,
-            "_bounds_candle_ts": _bounds_candle_ts.isoformat() if _bounds_candle_ts else None,
-            "_triggered_window_id": _triggered_window_id.isoformat() if _triggered_window_id else None,
-            "_triggered_window_side": _triggered_window_side,
-            "_last_exit_lock": _last_exit_lock,
-            "EntryCount": int(EntryCount),
-            "LastSide": LastSide,
-            "LastLastSide": LastLastSide,
-            "status": status,
-            "fillcheck": int(fillcheck),
-            "fillcount": int(fillcount),
-            "totaltradecount": int(totaltradecount),
-            "unfilledpnl": float(unfilledpnl),
-            "long_entry_price": float(long_entry_price) if is_valid_price(long_entry_price) else None,
-            "long_exit_price": float(long_exit_price) if is_valid_price(long_exit_price) else None,
-            "last_atr": float(last_atr) if is_valid_price(last_atr) else None,
-        }
-        state_col.replace_one({"_id": "bot_state"}, state, upsert=True)
-    except Exception as e:
-        print("⚠️ Error saving state to MongoDB:", e)
-
-
-def load_state():
-    """Restore global state from MongoDB."""
-    global candles, live_price, last_valid_price, alerts
-    global initial_balance, entryprice, running_pnl
-    global upper_bound, lower_bound, _bounds_candle_ts, _triggered_window_id
-    global EntryCount, LastSide, LastLastSide, status
-    global fillcheck, fillcount, totaltradecount, unfilledpnl
-    global long_entry_price, long_exit_price, last_atr, _last_exit_lock
-
-    try:
-        doc = state_col.find_one({"_id": "bot_state"})
-        if not doc:
-            print("ℹ️ No saved state found in DB, fresh start.")
-            return
-
-        candles = _deserialize_candles(doc.get("candles", []))
-        live_price = doc.get("live_price")
-        last_valid_price = doc.get("last_valid_price")
-        alerts = doc.get("alerts", []) or []
-
-        initial_balance = doc.get("initial_balance", 10.0)
-        entryprice = doc.get("entryprice")
-        running_pnl = doc.get("running_pnl", 0.0)
-
-        upper_bound = doc.get("upper_bound")
-        lower_bound = doc.get("lower_bound")
-
-        _bounds_candle_ts = (
-            pd.to_datetime(doc.get("_bounds_candle_ts")).tz_convert(STORE_TZ)
-            if doc.get("_bounds_candle_ts") else None
-        )
-        _triggered_window_id = (
-            pd.to_datetime(doc.get("_triggered_window_id")).tz_convert(STORE_TZ)
-            if doc.get("_triggered_window_id") else None
-        )
-        _triggered_window_side = doc.get("_triggered_window_side","buy")
-        _last_exit_lock = doc.get("_last_exit_lock","unlock")
-
-        EntryCount = doc.get("EntryCount", 0)
-        LastSide = doc.get("LastSide")
-        LastLastSide = doc.get("LastLastSide", "buy")
-        status = doc.get("status")
-
-        fillcheck = doc.get("fillcheck", 0)
-        fillcount = doc.get("fillcount", 0)
-        totaltradecount = doc.get("totaltradecount", 0)
-        unfilledpnl = doc.get("unfilledpnl", 0.0)
-
-        long_entry_price = doc.get("long_entry_price")
-        long_exit_price = doc.get("long_exit_price")
-        last_atr = doc.get("last_atr")
-
-        print("✅ State restored from MongoDB")
-    except Exception as e:
-        print("⚠️ Error loading state from MongoDB:", e)
-
-
 # ==========================
-# Utilities
+# Strategy logic
 # ==========================
-def is_valid_price(x):
-    try:
-        return float(x) > 0
-    except Exception:
-        return False
+def check_strategy(df, candle_time):
+    global last_alert, triggered, current_candle_time
 
+    # Reset triggers on new candle
+    if current_candle_time != candle_time:
+        triggered = {"entry": False, "exit": False}
+        current_candle_time = candle_time
 
-def fmt_price(p):
-    if p is None:
-        return "--"
-    ap = abs(p)
-    if ap >= 100:
-        return f"{p:.2f}"
-    elif ap >= 1:
-        return f"{p:.4f}"
-    else:
-        return f"{p:.8f}"
-
-
-# ==========================
-# Strategy helpers (fixed)
-# ==========================
-def compute_true_range_series(df: pd.DataFrame) -> pd.Series:
-    """Compute True Range (TR) for a DataFrame of closed candles.
-    Expects df has columns Open/High/Low/Close and index is chronological.
-    """
-    if df is None or df.empty or len(df) < 2:
-        return pd.Series(dtype=float)
-    prev_close = df["Close"].shift(1)
-    tr1 = df["High"] - df["Low"]
-    tr2 = (df["High"] - prev_close).abs()
-    tr3 = (df["Low"] - prev_close).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    return tr
-
-
-def compute_atr_from_closed_candles(atr_len=ATR_LENGTH):
-    """Compute ATR using last `atr_len` closed candles.
-    Algorithm:
-      - closed = all candles except the current open (candles.iloc[:-1])
-      - compute TR series on closed (needs at least 2 closed candles)
-      - take the last `atr_len` TR values (if available) and average them
-    Returns average TR (ATR) or None.
-    """
-    global candles
-    if candles is None or candles.empty:
-        return None
-    closed = candles.iloc[:-1].copy() if len(candles) >= 2 else pd.DataFrame()
-    if closed is None or len(closed) < 2:
-        # not enough closed data to compute TR
+    if len(df) < LENGTH + 2:
         return None
 
-    tr = compute_true_range_series(closed)
-    if tr.empty:
+    df = calculate_atr(df, LENGTH)
+    latest = df.iloc[-1]
+    atr = latest["ATR"]
+
+    if pd.isna(atr):
         return None
 
-    # pick the last `atr_len` TR values (if there are fewer, use what's available)
-    if atr_len <= 0:
-        return None
-    take = min(len(tr), atr_len)
-    last_tr = tr.tail(take)
-    if last_tr.empty:
-        return None
-    atr = float(last_tr.mean())
-    return atr
+    entry_price = latest["close"] + atr * NUM_ATRS
+    exit_price = latest["close"] - atr * NUM_ATRS
 
+    # Apply slippage
+    exit_price = exit_price - SLIPPAGE_TICKS
 
-# ==========================
-# Helpers (unchanged)
-# ==========================
-def fetch_initial_candles():
-    """Seed candles from Binance REST klines endpoint."""
-    global candles, live_price, last_valid_price
-    url = (
-        f"https://fapi.binance.com/fapi/v1/klines?symbol={SYMBOL.upper()}&interval={INTERVAL}&limit={CANDLE_LIMIT}"
-    )
-    r = requests.get(url, timeout=10)
-    r.raise_for_status()
-    data = r.json()
+    msg = None
+    # Entry trigger (only once per candle)
+    if latest["close"] >= entry_price and not triggered["entry"]:
+        msg = f"📈 Place LONG at {entry_price:.2f}, Exit at {exit_price:.2f}"
+        last_alert = msg
+        triggered["entry"] = True
 
-    rows = []
-    for k in data:
-        rows.append(
-            {
-                "time": datetime.fromtimestamp(k[0] / 1000, tz=STORE_TZ),  # UTC
-                "Open": float(k[1]),
-                "High": float(k[2]),
-                "Low": float(k[3]),
-                "Close": float(k[4]),
-            }
-        )
-    candles = pd.DataFrame(rows)
-    if not candles.empty:
-        live_price = float(candles["Close"].iloc[-1])
-        last_valid_price = live_price if is_valid_price(live_price) else None
-    save_state()
+    # Exit trigger (only once per candle)
+    elif latest["close"] <= exit_price and not triggered["exit"]:
+        msg = f"❌ Exit LONG at {exit_price:.2f}"
+        last_alert = msg
+        triggered["exit"] = True
 
-
-def calculate_pnl(entry_price: float, closing_price: float, side: str) -> float:
-    quantity = 0.005  # fixed quantity
-    if side == "buy":
-        return (closing_price - entry_price) * quantity
-    elif side == "sell":
-        return (entry_price - closing_price) * quantity
-    else:
-        return 0.0
-
-
-def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status_fun: str):
-    global EntryCount, LastSide, status, entryprice, running_pnl, initial_balance, lastpnl
-    global fillcheck, totaltradecount, unfilledpnl, LastLastSide
-
-    secret = "gajraj09"
-    quantity = 0.005
-
-    status = status_fun
-    pnl = 0.0
-
-    if status == "exit":
-        if entryprice is None:
-            print("[WEBHOOK] Exit requested but no stored entryprice; ignoring pnl update.")
-        else:
-            pnl = calculate_pnl(entryprice, entry_price_in, LastLastSide)
-            if fillcheck == 0:
-                initial_balance += pnl
-
-            running_pnl += pnl
-            lastpnl = pnl
-        entryprice = None
-        if fillcheck == 1:
-            unfilledpnl += pnl
-        fillcheck = 0
-    else:  # status == "entry"
-        if entryprice is not None:
-            # Close any previous implicit position first for accounting
-            pnl = calculate_pnl(entryprice, entry_price_in, LastLastSide)
-            if fillcheck == 0:
-                initial_balance += pnl
-            running_pnl += pnl
-            lastpnl = pnl
-        else:
-            print(f"[ENTRY] Opening first position at {fmt_price(entry_price_in)}")
-        entryprice = entry_price_in
-        totaltradecount += 1
-        fillcheck = 1
-    LastLastSide = LastSide
-
-    try:
-        payload = {
-            "symbol": SYMBOL.upper(),
-            "side": side,
-            "quantity": quantity,
-            "price": entry_price_in,
-            "status": status,
-            "secret": secret,
-        }
-        requests.post(WEBHOOK_URL, json=payload, timeout=5)
-        print("Sent payload:", payload)
-    except Exception as e:
-        print("Webhook error:", e)
-    save_state()
-
-
-def recompute_bounds_on_close():
-    """Compute channel bounds and ATR-based entry/exit levels when a candle closes."""
-    global upper_bound, lower_bound, _bounds_candle_ts, _triggered_window_id
-    global long_entry_price, long_exit_price, last_atr
-
-    # Need at least LENGTH closed candles + current open => len(candles) >= LENGTH + 1
-    if len(candles) < LENGTH + 1:
-        upper_bound = None
-        lower_bound = None
-        _bounds_candle_ts = None
-        _triggered_window_id = None
-        long_entry_price = None
-        long_exit_price = None
-        last_atr = None
-        save_state()
-        return
-
-    closed = candles.iloc[:-1]  # exclude current open
-    window = closed.tail(LENGTH)
-    highs = window["High"][window["High"] > 0]
-    lows = window["Low"][window["Low"] > 0]
-    if highs.empty or lows.empty:
-        return
-
-    upper_bound = float(highs.max())
-    lower_bound = float(lows.min())
-    _bounds_candle_ts = window["time"].iloc[-1]  # UTC
-    _triggered_window_id = None
-
-    # Compute ATR using closed candles
-    atr = compute_atr_from_closed_candles(ATR_LENGTH)
-    if atr is None:
-        last_atr = None
-        long_entry_price = None
-        long_exit_price = None
-        save_state()
-        return
-
-    last_atr = atr * ATR_MULT
-
-    # reference close = last closed candle's close
-    last_closed = closed.iloc[-1]
-    ref_close = float(last_closed["Close"])
-
-    long_entry_price = float(ref_close + last_atr)
-    long_exit_price = float(ref_close - last_atr)
-
-    print(f"[BOUNDS] upper={fmt_price(upper_bound)} lower={fmt_price(lower_bound)} | ATR={last_atr:.6f}")
-    print(f"[LEVELS] ENTRY={fmt_price(long_entry_price)} EXIT={fmt_price(long_exit_price)}")
-
-    save_state()
-
+    return msg
 
 # ==========================
-# Fillcheck update on every tick
-# ==========================
-def update_fillcheck(trade_price: float):
-    global fillcheck, fillcount, entryprice, LastSide, status, totaltradecount, unfilledpnl
-
-    if entryprice is None or fillcheck == 0:
-        return
-    was_fill = False
-    if status == "entry":
-        if LastSide == "buy" and trade_price <= entryprice:  # <= to allow exact touch
-            fillcheck = 0
-            fillcount += 1
-            was_fill = True
-        elif LastSide == "sell" and trade_price >= entryprice:
-            fillcheck = 0
-            fillcount += 1
-            was_fill = True
-    elif status == "exit":
-        fillcheck = 0
-        was_fill = True
-    if was_fill:
-        save_state()
-
-
-# ==========================
-# Trigger logic
-# ==========================
-def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
-    """
-    ENTRY (long-only): if no open position and trade_price >= long_entry_price -> send entry webhook
-    EXIT (for longs): if we have an open position and trade_price <= long_exit_price -> send exit webhook (apply slippage)
-    """
-    global alerts, _triggered_window_id, _triggered_window_side
-    global status, EntryCount, LastSide, _last_exit_lock
-    global long_entry_price, long_exit_price, last_atr, entryprice, fillcheck
-
-    # Preconditions
-    if not is_valid_price(trade_price) or long_entry_price is None or long_exit_price is None:
-        return
-
-    # timestamps
-    trigger_time = datetime.fromtimestamp(trade_ts_ms / 1000, tz=KOLKATA_TZ)
-    trigger_time_iso = trigger_time.isoformat()
-    ts_dt = datetime.fromtimestamp(trade_ts_ms / 1000, tz=STORE_TZ)
-
-    def log_and_send(side: str, price_val: float, friendly: str, st: str):
-        """Helper to send webhook + alert + save state"""
-        nonlocal trigger_time_iso, ts_dt
-        global alerts, _triggered_window_id, _triggered_window_side, LastSide
-
-        LastSide = side
-        _triggered_window_id = _bounds_candle_ts
-        _triggered_window_side = side
-
-        send_webhook(trigger_time_iso, price_val, side, st)
-
-        msg = (
-            f"{friendly} | {st}: {fmt_price(price_val)} | Live {fmt_price(trade_price)} "
-            f"| Trigger {ts_dt.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')}"
-        )
-        alerts.append(msg)
-        alerts[:] = alerts[-50:]
-        save_state()
-
-    # -------- EXIT logic (priority) ----------
-    if entryprice is not None and is_valid_price(entryprice):
-        if trade_price <= long_exit_price:
-            slippage_amount = SLIPPAGE_TICKS * TICK_SIZE
-            exit_price_with_slippage = max(0.0, long_exit_price - slippage_amount)
-            print(f"[TRIGGER] EXIT hit at {fmt_price(trade_price)} <= {fmt_price(long_exit_price)}; sending exit @ {fmt_price(exit_price_with_slippage)}")
-            log_and_send("buy", exit_price_with_slippage, "EXIT (ATR-based)", "exit")
-            return
-
-    # -------- ENTRY logic ----------
-    has_open_position = entryprice is not None and fillcheck == 1
-    if not has_open_position:
-        if trade_price >= long_entry_price:
-            print(f"[TRIGGER] ENTRY conditions met: live {fmt_price(trade_price)} >= entry {fmt_price(long_entry_price)}")
-            log_and_send("buy", long_entry_price, "LONG (ATR-based)", "entry")
-            return
-
-
-# ==========================
-# WebSocket handlers
+# WebSocket handling
 # ==========================
 def on_message(ws, message):
-    global candles, live_price, last_valid_price, status, lastpnl, _triggered_window_id, _last_exit_lock
-    try:
-        data = json.loads(message)
-        stream = data.get("stream")
-        payload = data.get("data")
+    global candles
+    data = json.loads(message)
+    k = data["k"]
+    ts = datetime.fromtimestamp(k["t"] / 1000)
 
-        if stream and "kline" in stream:
-            kline = payload["k"]
-            ts_dt = datetime.fromtimestamp(kline["t"] / 1000, tz=STORE_TZ)  # UTC
+    new_row = {
+        "time": ts,
+        "open": float(k["o"]),
+        "high": float(k["h"]),
+        "low": float(k["l"]),
+        "close": float(k["c"]),
+    }
 
-            o, h, l, c = (
-                float(kline["o"]),
-                float(kline["h"]),
-                float(kline["l"]),
-                float(kline["c"]),
-            )
-
-            if is_valid_price(c):
-                last_valid_price = c
-                live_price = c
-
-            new_candle_detected = candles.empty or candles.iloc[-1]["time"] != ts_dt
-
-            if new_candle_detected:
-                open_val = o if is_valid_price(o) else (last_valid_price if last_valid_price is not None else None)
-                if open_val is None:
-                    return
-
-                high_val = h if is_valid_price(h) else open_val
-                low_val = l if is_valid_price(l) else open_val
-                close_val = c if is_valid_price(c) else open_val
-
-                new_row = {
-                    "time": ts_dt,  # UTC
-                    "Open": open_val,
-                    "High": max(high_val, open_val),
-                    "Low": min(low_val, open_val),
-                    "Close": close_val,
-                }
-                candles = pd.concat([candles, pd.DataFrame([new_row])], ignore_index=True)
-
-                # just mark lock state; do not auto-exit here
-                _last_exit_lock = "unlock"
-
-                save_state()
-
-            else:
-                idx = candles.index[-1]
-                if is_valid_price(h):
-                    candles.at[idx, "High"] = max(candles.at[idx, "High"], h)
-                if is_valid_price(l):
-                    candles.at[idx, "Low"] = min(candles.at[idx, "Low"], l)
-                if is_valid_price(c):
-                    candles.at[idx, "Close"] = c
-                live_price = c
-                last_valid_price = c
-
-            # trim
-            if len(candles) > CANDLE_LIMIT:
-                candles = candles.tail(CANDLE_LIMIT).reset_index(drop=True)
-
-            if kline.get("x"):
-                # Candle closed -> recompute bounds (ATR & entry/exit levels)
-                recompute_bounds_on_close()
-
-        elif stream and "trade" in stream:
-            trade_price_raw = payload.get("p")
-            if not is_valid_price(trade_price_raw):
-                return
-
-            trade_price = float(trade_price_raw)
-            live_price = trade_price
-            last_valid_price = trade_price
-
-            if not candles.empty:
-                idx = candles.index[-1]
-                # Update last candle tick by tick
-                candles.at[idx, "Close"] = trade_price
-                candles.at[idx, "High"] = max(candles.at[idx, "High"], trade_price)
-                candles.at[idx, "Low"] = min(candles.at[idx, "Low"], trade_price)
-
-            # Update fill status and try triggers
-            update_fillcheck(trade_price)
-            trade_ts_ms = int(payload.get("T") or payload.get("E") or time.time() * 1000)
-            try_trigger_on_trade(trade_price, trade_ts_ms)
-
-    except Exception as e:
-        print("on_message error:", e)
-
-
-def on_error(ws, error):
-    print("WebSocket error:", error)
-
-
-def on_close(ws, code, msg):
-    print("WebSocket closed", code, msg)
-
-    def _restart():
-        time.sleep(2)
-        run_ws()
-
-    threading.Thread(target=_restart, daemon=True).start()
-
-
-def on_open(ws):
-    print("WebSocket connected")
-    params = [f"{SYMBOL}@kline_{INTERVAL}", f"{SYMBOL}@trade"]
-    msg = {"method": "SUBSCRIBE", "params": params, "id": 1}
-    ws.send(json.dumps(msg))
-
-
-def run_ws():
-    url = "wss://fstream.binance.com/stream"
-    ws = websocket.WebSocketApp(
-        url,
-        on_open=on_open,
-        on_message=on_message,
-        on_error=on_error,
-        on_close=on_close,
-    )
-    ws.run_forever(ping_interval=20, ping_timeout=10)
-
-
-# ==========================
-# Dash App (display updated levels)
-# ==========================
-app = dash.Dash(__name__)
-server = app.server
-app.layout = html.Div(
-    [
-        html.H1(f"{SYMBOL.upper()} Live Prices & Last {CANDLE_LIMIT} Candles"),
-        html.Div(
-            [
-                html.H2(id="live-price", style={"color": "black", "marginRight": "20px"}),
-                html.H2(id="bal", style={"color": "black", "marginRight": "20px"}),
-                html.Div(id="trade-stats", style={"display": "flex", "gap": "20px", "alignItems": "center"}),
-            ],
-            style={"display": "flex", "flexDirection": "row", "alignItems": "center"},
-        ),
-        html.Div(id="ohlc-values"),
-        html.Div(id="bounds", style={"marginTop": "8px", "color": "#9ad"}),
-        html.Div(id="levels", style={"marginTop": "8px", "color": "#f9a"}),
-        html.H3("Strategy Alerts"),
-        html.Ul(id="strategy-alerts"),
-        dcc.Interval(id="interval", interval=500, n_intervals=0),
-    ]
-)
-
-
-@app.callback(
-    [
-        Output("live-price", "children"),
-        Output("bal", "children"),
-        Output("trade-stats", "children"),
-        Output("ohlc-values", "children"),
-        Output("strategy-alerts", "children"),
-        Output("bounds", "children"),
-        Output("levels", "children"),
-    ],
-    [Input("interval", "n_intervals")],
-)
-def update_display(_):
-    if len(candles) == 0:
-        return (
-            "Live Price: --",
-            f"Balance: {fmt_price(initial_balance)}",
-            [],
-            [],
-            [],
-            "Bounds: waiting for enough closed candles...",
-            "Levels: waiting..."
-        )
-
-    lp = f"Live Price: {fmt_price(live_price)}"
-    bal = f"Balance: {fmt_price(initial_balance)}"
-
-    stats_html = [
-        html.Div(f"FillCheck: {fillcheck}"),
-        html.Div(f"FillCount: {fillcount}"),
-        html.Div(f"TotalTrades: {totaltradecount}"),
-        html.Div(f"UnfilledPnL: {fmt_price(unfilledpnl)}"),
-        html.Div(f"ATR(multiplied): {fmt_price(last_atr) if last_atr else '--'}"),
-    ]
-
-    ohlc_html = []
-    for idx, row in candles.iterrows():
-        ts_str = row["time"].astimezone(KOLKATA_TZ).strftime("%H:%M:%S")
-        text = (
-            f"{ts_str} → O:{fmt_price(row['Open'])}, H:{fmt_price(row['High'])}, "
-            f"L:{fmt_price(row['Low'])}, C:{fmt_price(row['Close'])}"
-        )
-        ohlc_html.append(html.Div(text))
-
-    alerts_html = [html.Li(a) for a in alerts[-10:]]
-
-    if upper_bound is not None and lower_bound is not None and _bounds_candle_ts is not None:
-        btxt = (
-            f"Bounds[{LENGTH}] → Upper {fmt_price(upper_bound)}, Lower {fmt_price(lower_bound)} "
-            f"(from candle {_bounds_candle_ts.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')})"
+    if ts in candles["time"].values:
+        candles.loc[candles["time"] == ts, ["open", "high", "low", "close"]] = (
+            new_row["open"], new_row["high"], new_row["low"], new_row["close"]
         )
     else:
-        btxt = "Bounds: waiting for enough closed candles..."
+        candles = pd.concat([candles, pd.DataFrame([new_row])], ignore_index=True)
 
-    lvls = f"Long ENTRY: {fmt_price(long_entry_price)} | Long EXIT: {fmt_price(long_exit_price)} | ATR(mult): {fmt_price(last_atr)}"
+    alert = check_strategy(candles, ts)
+    if alert:
+        print(alert)
 
-    return lp, bal, stats_html, ohlc_html, alerts_html, btxt, lvls
+def on_open(ws):
+    print("✅ WebSocket connected")
 
+def on_close(ws, close_status_code, close_msg):
+    print("❌ WebSocket closed")
 
-# Keep-alive ping thread
-def keep_alive():
-    try:
-        print(f"🔄 Pinging {PING_URL}")
-        r = requests.get(PING_URL, timeout=10)
-        print("✅ Ping response:", r.status_code)
-    except Exception as e:
-        print("⚠️ Keep-alive ping failed:", str(e))
-
-
-@server.route('/ping', methods=['GET'])
-def ping():
-    keep_alive()
-    return jsonify({"status": "alive"}), 200
-
+def run_ws():
+    ws = websocket.WebSocketApp(WS_URL, on_message=on_message, on_open=on_open, on_close=on_close)
+    ws.run_forever()
 
 # ==========================
-# Main (Render compatible)
+# Dash frontend
+# ==========================
+app = dash.Dash(__name__)
+
+app.layout = html.Div([
+    html.H1("ETHUSDC Futures Monitor", style={"textAlign": "center"}),
+    html.Div(id="live_alert", style={"fontSize": 22, "margin": "20px"}),
+    dcc.Interval(id="interval", interval=2000, n_intervals=0),
+    dcc.Graph(id="price_chart")
+])
+
+@app.callback(
+    [Output("live_alert", "children"),
+     Output("price_chart", "figure")],
+    [Input("interval", "n_intervals")]
+)
+def update_dashboard(_):
+    global candles, last_alert
+    if len(candles) == 0:
+        return "Waiting for data...", {}
+
+    fig = {
+        "data": [{
+            "x": candles["time"],
+            "y": candles["close"],
+            "type": "line",
+            "name": "Close Price"
+        }],
+        "layout": {"title": "Live ETHUSDC Price"}
+    }
+
+    return last_alert or "No signal yet", fig
+
+# ==========================
+# Main
 # ==========================
 if __name__ == "__main__":
-    try:
-        load_state()
-    except Exception as e:
-        print("Warning: load_state() failed:", e)
-
-    # fetch initial candles if needed
-    if candles.empty:
-        try:
-            fetch_initial_candles()
-        except Exception as e:
-            print("Initial fetch failed:", e)
-
-    # compute levels if possible
-    if len(candles) >= LENGTH + 1:
-        recompute_bounds_on_close()
-
     t = threading.Thread(target=run_ws, daemon=True)
     t.start()
+    app.run_server(debug=True, port=8050)
 
-    def periodic_save_loop(interval_s=30):
-        while True:
-            try:
-                save_state()
-            except Exception as e:
-                print("Periodic save error:", e)
-            time.sleep(interval_s)
-
-    saver_thread = threading.Thread(target=periodic_save_loop, args=(30,), daemon=True)
-    saver_thread.start()
-
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, debug=False)
 
 
 
