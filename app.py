@@ -15,22 +15,22 @@ from flask import Flask, request, jsonify
 from pymongo import MongoClient
 
 # ==========================
-# Config
+# Config (tweak here)
 # ==========================
 SYMBOL = "ethusdc"       # keep lowercase for websocket streams
 INTERVAL = "5m"
-CANDLE_LIMIT = 10         # increase a bit to compute ATR reliably
+CANDLE_LIMIT = 50         # needs to be large enough to compute ATR reliably
 PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://binance-65gz.onrender.com/web")
 
-# === Strategy params (new) ===
-ATR_LENGTH = 1           # equivalent to `length` in Pinescript
-ATR_MULT = 0.1           # equivalent to `numATRs`
-SLIPPAGE_TICKS = 1        # exit slippage in ticks
-TICK_SIZE = 0.01          # ETHUSDC tick size (adjust if needed)
+# === Strategy params (change to your preference) ===
+ATR_LENGTH = 5           # lookback for ATR (use >=1). 5 is reasonable.
+ATR_MULT = 0.75          # ATR multiplier
+SLIPPAGE_TICKS = 1       # exit slippage in ticks
+TICK_SIZE = 0.01         # ETHUSDC tick size (adjust if needed)
 
-# ====For ATR-based bounds we still use LENGTH closed candles for "channel bounds"
-LENGTH = 3  # number of LAST CLOSED candles to compute bounds (keeps earlier behaviour)
+# ====For channel bounds (keeps earlier behaviour)
+LENGTH = 3  # number of LAST CLOSED candles to compute channel bounds
 
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
 DB_NAME = "trading_bot_eth_atr"
@@ -238,10 +238,12 @@ def fmt_price(p):
 
 
 # ==========================
-# Strategy helpers (new)
+# Strategy helpers (fixed)
 # ==========================
 def compute_true_range_series(df: pd.DataFrame) -> pd.Series:
-    """Compute true range for a DataFrame of closed candles (must have Open, High, Low, Close)."""
+    """Compute True Range (TR) for a DataFrame of closed candles.
+    Expects df has columns Open/High/Low/Close and index is chronological.
+    """
     if df is None or df.empty or len(df) < 2:
         return pd.Series(dtype=float)
     prev_close = df["Close"].shift(1)
@@ -254,26 +256,32 @@ def compute_true_range_series(df: pd.DataFrame) -> pd.Series:
 
 def compute_atr_from_closed_candles(atr_len=ATR_LENGTH):
     """Compute ATR using last `atr_len` closed candles.
-    We take closed candles = candles excluding the last (current open) row.
-    Returns ATR value or None.
+    Algorithm:
+      - closed = all candles except the current open (candles.iloc[:-1])
+      - compute TR series on closed (needs at least 2 closed candles)
+      - take the last `atr_len` TR values (if available) and average them
+    Returns average TR (ATR) or None.
     """
     global candles
-    if candles is None or candles.empty or len(candles) < 2:
+    if candles is None or candles.empty:
         return None
-    # closed candles are all but last row
     closed = candles.iloc[:-1].copy() if len(candles) >= 2 else pd.DataFrame()
-    if closed is None or closed.empty or len(closed) < atr_len + 1:
-        # if not enough closed candles, allow using exactly atr_len rows if available
-        if closed is None or len(closed) < atr_len:
-            return None
-    # take last atr_len rows (must have at least 1 prev close to compute TR, but TR uses prev close inside)
-    target = closed.tail(atr_len)
-    if len(target) < atr_len:
+    if closed is None or len(closed) < 2:
+        # not enough closed data to compute TR
         return None
-    tr = compute_true_range_series(target)
+
+    tr = compute_true_range_series(closed)
     if tr.empty:
         return None
-    atr = float(tr.mean())
+
+    # pick the last `atr_len` TR values (if there are fewer, use what's available)
+    if atr_len <= 0:
+        return None
+    take = min(len(tr), atr_len)
+    last_tr = tr.tail(take)
+    if last_tr.empty:
+        return None
+    atr = float(last_tr.mean())
     return atr
 
 
@@ -281,6 +289,7 @@ def compute_atr_from_closed_candles(atr_len=ATR_LENGTH):
 # Helpers (unchanged)
 # ==========================
 def fetch_initial_candles():
+    """Seed candles from Binance REST klines endpoint."""
     global candles, live_price, last_valid_price
     url = (
         f"https://fapi.binance.com/fapi/v1/klines?symbol={SYMBOL.upper()}&interval={INTERVAL}&limit={CANDLE_LIMIT}"
@@ -377,6 +386,7 @@ def recompute_bounds_on_close():
     global upper_bound, lower_bound, _bounds_candle_ts, _triggered_window_id
     global long_entry_price, long_exit_price, last_atr
 
+    # Need at least LENGTH closed candles + current open => len(candles) >= LENGTH + 1
     if len(candles) < LENGTH + 1:
         upper_bound = None
         lower_bound = None
@@ -388,8 +398,7 @@ def recompute_bounds_on_close():
         save_state()
         return
 
-    # Channel bounds using last LENGTH *closed* candles (exclude current open)
-    closed = candles.iloc[:-1]  # all closed candles
+    closed = candles.iloc[:-1]  # exclude current open
     window = closed.tail(LENGTH)
     highs = window["High"][window["High"] > 0]
     lows = window["Low"][window["Low"] > 0]
@@ -401,7 +410,7 @@ def recompute_bounds_on_close():
     _bounds_candle_ts = window["time"].iloc[-1]  # UTC
     _triggered_window_id = None
 
-    # Compute ATR from last ATR_LENGTH closed candles
+    # Compute ATR using closed candles
     atr = compute_atr_from_closed_candles(ATR_LENGTH)
     if atr is None:
         last_atr = None
@@ -412,7 +421,7 @@ def recompute_bounds_on_close():
 
     last_atr = atr * ATR_MULT
 
-    # Use the last *closed* candle's close as reference (the candle just before current open)
+    # reference close = last closed candle's close
     last_closed = closed.iloc[-1]
     ref_close = float(last_closed["Close"])
 
@@ -451,14 +460,12 @@ def update_fillcheck(trade_price: float):
 
 
 # ==========================
-# Trigger logic (REPLACED)
+# Trigger logic
 # ==========================
 def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
     """
-    New logic:
-      - Compute levels (assumes recompute_bounds_on_close has been run on last candle close)
-      - ENTRY (long-only): if no open position (entryprice is None or fillcheck==0) and trade_price >= long_entry_price -> send entry webhook
-      - EXIT (for longs): if we have an open position (entryprice is not None) and trade_price <= long_exit_price -> send exit webhook (apply slippage)
+    ENTRY (long-only): if no open position and trade_price >= long_entry_price -> send entry webhook
+    EXIT (for longs): if we have an open position and trade_price <= long_exit_price -> send exit webhook (apply slippage)
     """
     global alerts, _triggered_window_id, _triggered_window_side
     global status, EntryCount, LastSide, _last_exit_lock
@@ -492,20 +499,16 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
         alerts[:] = alerts[-50:]
         save_state()
 
-    # -------- EXIT logic (priority: if we have a long open, try to exit first) ----------
-    # We treat `entryprice is not None` as having an open position (bookkeeping variable)
+    # -------- EXIT logic (priority) ----------
     if entryprice is not None and is_valid_price(entryprice):
-        # if price touches or goes below exit level -> exit
         if trade_price <= long_exit_price:
-            # apply slippage to simulate worse exit fill (negative slippage reduces exit price)
             slippage_amount = SLIPPAGE_TICKS * TICK_SIZE
             exit_price_with_slippage = max(0.0, long_exit_price - slippage_amount)
             print(f"[TRIGGER] EXIT hit at {fmt_price(trade_price)} <= {fmt_price(long_exit_price)}; sending exit @ {fmt_price(exit_price_with_slippage)}")
             log_and_send("buy", exit_price_with_slippage, "EXIT (ATR-based)", "exit")
-            return  # exit handled, skip entry check this tick
+            return
 
-    # -------- ENTRY logic (only if no open position) ----------
-    # Ensure no open position: entryprice is None or fillcheck==0 (no pending unfilled)
+    # -------- ENTRY logic ----------
     has_open_position = entryprice is not None and fillcheck == 1
     if not has_open_position:
         if trade_price >= long_entry_price:
@@ -515,7 +518,7 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
 
 
 # ==========================
-# WebSocket handlers (mostly unchanged)
+# WebSocket handlers
 # ==========================
 def on_message(ws, message):
     global candles, live_price, last_valid_price, status, lastpnl, _triggered_window_id, _last_exit_lock
@@ -559,8 +562,7 @@ def on_message(ws, message):
                 }
                 candles = pd.concat([candles, pd.DataFrame([new_row])], ignore_index=True)
 
-                # ✅ Removed forced EXIT logic here
-                # Just mark lock state
+                # just mark lock state; do not auto-exit here
                 _last_exit_lock = "unlock"
 
                 save_state()
@@ -576,11 +578,12 @@ def on_message(ws, message):
                 live_price = c
                 last_valid_price = c
 
+            # trim
             if len(candles) > CANDLE_LIMIT:
                 candles = candles.tail(CANDLE_LIMIT).reset_index(drop=True)
 
             if kline.get("x"):
-                # Candle closed -> recompute bounds
+                # Candle closed -> recompute bounds (ATR & entry/exit levels)
                 recompute_bounds_on_close()
 
         elif stream and "trade" in stream:
@@ -606,7 +609,6 @@ def on_message(ws, message):
 
     except Exception as e:
         print("on_message error:", e)
-
 
 
 def on_error(ws, error):
@@ -752,13 +754,15 @@ if __name__ == "__main__":
     except Exception as e:
         print("Warning: load_state() failed:", e)
 
+    # fetch initial candles if needed
     if candles.empty:
         try:
             fetch_initial_candles()
         except Exception as e:
             print("Initial fetch failed:", e)
 
-    if len(candles) >= LENGTH and (upper_bound is None or lower_bound is None):
+    # compute levels if possible
+    if len(candles) >= LENGTH + 1:
         recompute_bounds_on_close()
 
     t = threading.Thread(target=run_ws, daemon=True)
@@ -777,6 +781,7 @@ if __name__ == "__main__":
 
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False)
+
 
 
 
