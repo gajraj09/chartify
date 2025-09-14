@@ -24,8 +24,8 @@ PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://binance-65gz.onrender.com/web")
 
 # === Strategy params (change to your preference) ===
-ATR_LENGTH = 5           # lookback for ATR (use >=1). 5 is reasonable.
-ATR_MULT = 0.75          # ATR multiplier
+ATR_LENGTH = 1           # lookback for ATR (use >=1). 5 is reasonable.
+ATR_MULT = 0.1          # ATR multiplier
 SLIPPAGE_TICKS = 1       # exit slippage in ticks
 TICK_SIZE = 0.01         # ETHUSDC tick size (adjust if needed)
 
