@@ -19,13 +19,13 @@ from pymongo import MongoClient
 # ==========================
 SYMBOL = "ethusdc"       # keep lowercase for websocket streams
 INTERVAL = "15m"
-CANDLE_LIMIT = 50         # increase a bit to compute ATR reliably
+CANDLE_LIMIT = 10         # increase a bit to compute ATR reliably
 PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://binance-65gz.onrender.com/web")
 
 # === Strategy params (new) ===
-ATR_LENGTH = 5            # equivalent to `length` in Pinescript
-ATR_MULT = 0.75           # equivalent to `numATRs`
+ATR_LENGTH = 1           # equivalent to `length` in Pinescript
+ATR_MULT = 0.1           # equivalent to `numATRs`
 SLIPPAGE_TICKS = 1        # exit slippage in ticks
 TICK_SIZE = 0.01          # ETHUSDC tick size (adjust if needed)
 
@@ -33,7 +33,7 @@ TICK_SIZE = 0.01          # ETHUSDC tick size (adjust if needed)
 LENGTH = 3  # number of LAST CLOSED candles to compute bounds (keeps earlier behaviour)
 
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
-DB_NAME = "trading_bot_eth_longonly"
+DB_NAME = "trading_bot_eth_atr"
 COLLECTION_STATE = "bot_state"
 
 # ==========================
