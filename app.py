@@ -18,7 +18,7 @@ from pymongo import MongoClient
 # Config
 # ==========================
 SYMBOL = "ethusdc"       # keep lowercase for websocket streams
-INTERVAL = "15m"
+INTERVAL = "5m"
 CANDLE_LIMIT = 10         # increase a bit to compute ATR reliably
 PING_URL = os.environ.get("PING_URL", "https://bot-reviver.onrender.com/ping")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://binance-65gz.onrender.com/web")
