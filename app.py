@@ -119,7 +119,7 @@ def save_state():
             "candles": _serialize_candles(candles),
             "live_price": float(live_price) if is_valid_price(live_price) else None,
             "last_valid_price": float(last_valid_price) if is_valid_price(last_valid_price) else None,
-            "alerts": alerts[-100:],  # keep last 100
+            "alerts": alerts[-200:],  # keep last 100
             "initial_balance": float(initial_balance),
             "entryprice": float(entryprice) if is_valid_price(entryprice) else None,
             "running_pnl": float(running_pnl),
@@ -813,7 +813,7 @@ def on_message(ws, message):
                         send_webhook(ts_dt.astimezone(KOLKATA_TZ).strftime("%H:%M:%S"), open_val, "buy", "exit")
                         msg = f"EXIT | Price: {fmt_price(open_val)} | Time: {ts_dt.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')}| PnL: {lastpnl}"
                         alerts.append(msg)
-                        alerts[:] = alerts[-50:]
+                        alerts[:] = alerts[-200:]
                     except Exception as e:
                         print("New candle webhook error:", e)
                 
