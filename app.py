@@ -343,27 +343,101 @@ def recompute_bounds_on_close():
 # Fillcheck update on every tick
 # ==========================
 
+#===============================================
+# Code for fill check
+# --- globals for drop-based fill detection ---
+
+DROP_TICKS = 10
+TICK_SIZE = 0.01  # adjust to your symbol tick size if different
+
+_peak_price = None         # highest price seen since fillcheck started
+_trough_price = None       # lowest price seen since fillcheck started
+_drop_filled = False       # whether we already treated a drop as fill for this cycle
+_last_entryprice_seen = None
+# ------------------------------------------------
+
 def update_fillcheck(trade_price: float):
     global fillcheck, fillcount, entryprice, LastSide, status, totaltradecount, unfilledpnl
+    global _peak_price, _trough_price, _drop_filled, _last_entryprice_seen
 
+    # If no active entry/fillcheck, clear internal state and return
     if entryprice is None or fillcheck == 0:
+        _peak_price = None
+        _trough_price = None
+        _drop_filled = False
+        _last_entryprice_seen = None
         return
-    was_fill = False
-    if status == "entry":
-        if LastSide == "buy" and trade_price <= entryprice:  # <= to allow exact touch
+
+    # If entryprice changed since last time, reset internal tracking for a fresh cycle
+    if _last_entryprice_seen is None or entryprice != _last_entryprice_seen:
+        _last_entryprice_seen = entryprice
+        _peak_price = trade_price
+        _trough_price = trade_price
+        _drop_filled = False
+
+    # Update running peak and trough
+    if _peak_price is None or trade_price > _peak_price:
+        _peak_price = trade_price
+    if _trough_price is None or trade_price < _trough_price:
+        _trough_price = trade_price
+
+    drop_threshold = DROP_TICKS * TICK_SIZE
+
+    # BUY side: detect drop from peak
+    if LastSide == "buy":
+        drop_amount = _peak_price - trade_price
+        if (not _drop_filled) and drop_amount >= drop_threshold:
+            # mark as filled
             fillcheck = 0
             fillcount += 1
-            was_fill = True
-        elif LastSide == "sell" and trade_price >= entryprice:
+            _drop_filled = True
+            print(f"🚨 Fill: BUY first {DROP_TICKS}-tick drop -> peak={_peak_price}, price={trade_price}, drop={drop_amount:.8f}")
+            save_state()
+            return
+
+    # SELL side: detect rise from trough (opposite)
+    elif LastSide == "sell":
+        rise_amount = trade_price - _trough_price
+        if (not _drop_filled) and rise_amount >= drop_threshold:
             fillcheck = 0
             fillcount += 1
-            was_fill = True
-    elif status == "exit":
-        # Exit fill handling can be more sophisticated if you post exit orders
-        fillcheck = 0
-        was_fill = True
-    if was_fill:
-        save_state()
+            _drop_filled = True
+            print(f"🚨 Fill: SELL first {DROP_TICKS}-tick rise -> trough={_trough_price}, price={trade_price}, rise={rise_amount:.8f}")
+            save_state()
+            return
+
+    # No fill yet — continue tracking
+    return
+
+
+
+#===============================================
+#===============================================
+
+
+
+
+# def update_fillcheck(trade_price: float):
+#     global fillcheck, fillcount, entryprice, LastSide, status, totaltradecount, unfilledpnl
+
+#     if entryprice is None or fillcheck == 0:
+#         return
+#     was_fill = False
+#     if status == "entry":
+#         if LastSide == "buy" and trade_price <= entryprice:  # <= to allow exact touch
+#             fillcheck = 0
+#             fillcount += 1
+#             was_fill = True
+#         elif LastSide == "sell" and trade_price >= entryprice:
+#             fillcheck = 0
+#             fillcount += 1
+#             was_fill = True
+#     elif status == "exit":
+#         # Exit fill handling can be more sophisticated if you post exit orders
+#         fillcheck = 0
+#         was_fill = True
+#     if was_fill:
+#         save_state()
 
 
 
