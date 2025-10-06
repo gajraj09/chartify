@@ -27,7 +27,7 @@ WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://binance-65gz.onrender.com/w
 LENGTH = 1
 
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
-DB_NAME = "trading_bot_eth_longonly_2-10"
+DB_NAME = "trading_bot_eth_longonly_6-10"
 COLLECTION_STATE = "bot_state"
 
 KOLKATA_TZ = timezone(timedelta(hours=5, minutes=30))
