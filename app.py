@@ -264,7 +264,7 @@ def calculate_pnl(entry_price: float, closing_price: float, side: str) -> float:
 def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status_fun: str):
     global EntryCount, LastSide, status, entryprice, running_pnl, initial_balance, lastpnl
     global fillcheck, totaltradecount, unfilledpnl, LastLastSide
-    global unfilled_alerts
+    # global unfilled_alerts
 
     secret = "gajraj09"
     quantity = 0.005
@@ -273,7 +273,7 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status
     pnl = 0.0
     if status == "entry" and fillcheck == 1 and entryprice is not None:
         # previous entry was not filled
-        unfilled_alerts.append(
+        alerts.append(
             f"UNFILLED | Side={LastLastSide} | Price={fmt_price(entryprice)} | Time={trigger_time_iso}"
         )
 
@@ -490,7 +490,7 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
             f"| Trigger {ts_dt.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')}"
         )
         alerts.append(msg)
-        alerts[:] = alerts[-50:]  # keep only last 50
+        alerts[:] = alerts[-200:]  # keep only last 50
 
         save_state()
 
