@@ -261,22 +261,120 @@ def calculate_pnl(entry_price: float, closing_price: float, side: str) -> float:
         return 0.0
 
 
+# def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status_fun: str):
+#     global EntryCount, LastSide, status, entryprice, running_pnl, initial_balance, lastpnl
+#     global fillcheck, totaltradecount, unfilledpnl, LastLastSide
+#     # global unfilled_alerts
+
+#     secret = "gajraj09"
+#     quantity = 0.005
+
+#     status = status_fun
+#     pnl = 0.0
+#     if status == "entry" and fillcheck == 1 and entryprice is not None:
+#         # previous entry was not filled
+#         alerts.append(
+#             f"UNFILLED | Side={LastLastSide} | Price={fmt_price(entryprice)} | Time={trigger_time_iso}"
+#         )
+
+#     if status == "exit":
+#         if entryprice is None:
+#             print("[WEBHOOK] Exit requested but no stored entryprice; ignoring pnl update.")
+#         else:
+#             pnl = calculate_pnl(entryprice, entry_price_in, LastLastSide)
+#             if fillcheck == 0:
+#                 initial_balance += pnl
+                
+#             running_pnl += pnl
+#             lastpnl = pnl
+#         entryprice = None
+#         if fillcheck == 1:
+#             unfilledpnl += pnl
+#         fillcheck = 0
+#     else:  # status == "entry"
+#         if entryprice is not None:
+#             # Close any previous implicit position first for accounting
+#             pnl = calculate_pnl(entryprice, entry_price_in, LastLastSide)
+#             if fillcheck == 0:
+#                 initial_balance += pnl
+#             running_pnl += pnl
+#             lastpnl = pnl
+#         else:
+#             print(f"[ENTRY] Opening first position at {fmt_price(entry_price_in)}")
+#         entryprice = entry_price_in
+#         totaltradecount += 1
+#         fillcheck = 1
+#     LastLastSide = LastSide
+
+
+#     try:
+#         payload = {
+#             "symbol": SYMBOL.upper(),
+#             "side": side,
+#             "quantity": quantity,
+#             "price": entry_price_in,
+#             "status": status,
+#             "secret": secret,
+#         }
+#         requests.post(WEBHOOK_URL, json=payload, timeout=5)
+#         print("Sent payload:", payload)
+#     except Exception as e:
+#         print("Webhook error:", e)
+#     save_state()
+
+
+# def recompute_bounds_on_close():
+#     global upper_bound, lower_bound, _bounds_candle_ts, _triggered_window_id
+#     if len(candles) < LENGTH:
+#         upper_bound = None
+#         lower_bound = None
+#         _bounds_candle_ts = None
+#         _triggered_window_id = None
+#         save_state()
+#         return
+
+#     window = candles.tail(LENGTH)
+#     highs = window["High"][window["High"] > 0]
+#     lows = window["Low"][window["Low"] > 0]
+#     if highs.empty or lows.empty:
+#         return
+
+#     upper_bound = float(highs.max())
+#     lower_bound = float(lows.min())
+#     _bounds_candle_ts = window["time"].iloc[-1]  # UTC
+#     _triggered_window_id = None
+#     save_state()
+
+## Upadte on 6/10/2025 -> the actual fill price====================================
+def calculate_pnl(entry_price: float, closing_price: float, side: str) -> float:
+    """Calculate profit/loss for a fixed quantity position."""
+    quantity = 0.005  # fixed quantity
+    if side == "buy":
+        return (closing_price - entry_price) * quantity
+    elif side == "sell":
+        return (entry_price - closing_price) * quantity
+    else:
+        return 0.0
+
+
 def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status_fun: str):
+    """Handles webhook sending and state updates for entries/exits."""
     global EntryCount, LastSide, status, entryprice, running_pnl, initial_balance, lastpnl
     global fillcheck, totaltradecount, unfilledpnl, LastLastSide
-    # global unfilled_alerts
 
     secret = "gajraj09"
     quantity = 0.005
 
     status = status_fun
     pnl = 0.0
+
+    # --- Handle previous unfilled entry ---
     if status == "entry" and fillcheck == 1 and entryprice is not None:
-        # previous entry was not filled
         alerts.append(
             f"UNFILLED | Side={LastLastSide} | Price={fmt_price(entryprice)} | Time={trigger_time_iso}"
         )
 
+    # --- Exit logic ---
     if status == "exit":
         if entryprice is None:
             print("[WEBHOOK] Exit requested but no stored entryprice; ignoring pnl update.")
@@ -284,16 +382,17 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status
             pnl = calculate_pnl(entryprice, entry_price_in, LastLastSide)
             if fillcheck == 0:
                 initial_balance += pnl
-                
             running_pnl += pnl
             lastpnl = pnl
+
         entryprice = None
         if fillcheck == 1:
             unfilledpnl += pnl
         fillcheck = 0
+
+    # --- Entry logic ---
     else:  # status == "entry"
         if entryprice is not None:
-            # Close any previous implicit position first for accounting
             pnl = calculate_pnl(entryprice, entry_price_in, LastLastSide)
             if fillcheck == 0:
                 initial_balance += pnl
@@ -301,12 +400,14 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status
             lastpnl = pnl
         else:
             print(f"[ENTRY] Opening first position at {fmt_price(entry_price_in)}")
+
         entryprice = entry_price_in
         totaltradecount += 1
         fillcheck = 1
+
     LastLastSide = LastSide
 
-
+    # --- Send webhook payload ---
     try:
         payload = {
             "symbol": SYMBOL.upper(),
@@ -320,10 +421,12 @@ def send_webhook(trigger_time_iso: str, entry_price_in: float, side: str, status
         print("Sent payload:", payload)
     except Exception as e:
         print("Webhook error:", e)
+
     save_state()
 
 
 def recompute_bounds_on_close():
+    """Recalculate upper/lower trading bounds from recent candle data."""
     global upper_bound, lower_bound, _bounds_candle_ts, _triggered_window_id
     if len(candles) < LENGTH:
         upper_bound = None
@@ -344,6 +447,8 @@ def recompute_bounds_on_close():
     _bounds_candle_ts = window["time"].iloc[-1]  # UTC
     _triggered_window_id = None
     save_state()
+#=====================================================================================
+#=====================================================================================
 
 
 # ==========================
@@ -354,20 +459,90 @@ def recompute_bounds_on_close():
 # Code for fill check
 # --- globals for drop-based fill detection ---
 
+# DROP_TICKS = 10
+# TICK_SIZE = 0.01  # adjust to your symbol tick size if different
+
+# _peak_price = None         # highest price seen since fillcheck started
+# _trough_price = None       # lowest price seen since fillcheck started
+# _drop_filled = False       # whether we already treated a drop as fill for this cycle
+# _last_entryprice_seen = None
+# # ------------------------------------------------
+
+# def update_fillcheck(trade_price: float):
+#     global fillcheck, fillcount, entryprice, LastSide, status, totaltradecount, unfilledpnl
+#     global _peak_price, _trough_price, _drop_filled, _last_entryprice_seen
+
+#     # If no active entry/fillcheck, clear internal state and return
+#     if entryprice is None or fillcheck == 0:
+#         _peak_price = None
+#         _trough_price = None
+#         _drop_filled = False
+#         _last_entryprice_seen = None
+#         return
+
+#     # If entryprice changed since last time, reset internal tracking for a fresh cycle
+#     if _last_entryprice_seen is None or entryprice != _last_entryprice_seen:
+#         _last_entryprice_seen = entryprice
+#         _peak_price = trade_price
+#         _trough_price = trade_price
+#         _drop_filled = False
+
+#     # Update running peak and trough
+#     if _peak_price is None or trade_price > _peak_price:
+#         _peak_price = trade_price
+#     if _trough_price is None or trade_price < _trough_price:
+#         _trough_price = trade_price
+
+#     drop_threshold = DROP_TICKS * TICK_SIZE
+
+#     # BUY side: detect drop from peak
+#     if LastSide == "buy":
+#         drop_amount = _peak_price - trade_price
+#         if (not _drop_filled) and drop_amount >= drop_threshold:
+#             # mark as filled
+#             fillcheck = 0
+#             fillcount += 1
+#             _drop_filled = True
+#             print(f"🚨 Fill: BUY first {DROP_TICKS}-tick drop -> peak={_peak_price}, price={trade_price}, drop={drop_amount:.8f}")
+#             save_state()
+#             return
+
+#     # SELL side: detect rise from trough (opposite)
+#     elif LastSide == "sell":
+#         rise_amount = trade_price - _trough_price
+#         if (not _drop_filled) and rise_amount >= drop_threshold:
+#             fillcheck = 0
+#             fillcount += 1
+#             _drop_filled = True
+#             print(f"🚨 Fill: SELL first {DROP_TICKS}-tick rise -> trough={_trough_price}, price={trade_price}, rise={rise_amount:.8f}")
+#             save_state()
+#             return
+
+#     # No fill yet — continue tracking
+#     return
+
+
+
+# --- globals for drop-based fill detection ---
 DROP_TICKS = 10
 TICK_SIZE = 0.01  # adjust to your symbol tick size if different
 
-_peak_price = None         # highest price seen since fillcheck started
-_trough_price = None       # lowest price seen since fillcheck started
-_drop_filled = False       # whether we already treated a drop as fill for this cycle
+_peak_price = None
+_trough_price = None
+_drop_filled = False
 _last_entryprice_seen = None
 # ------------------------------------------------
 
-def update_fillcheck(trade_price: float):
-    global fillcheck, fillcount, entryprice, LastSide, status, totaltradecount, unfilledpnl
-    global _peak_price, _trough_price, _drop_filled, _last_entryprice_seen
 
-    # If no active entry/fillcheck, clear internal state and return
+def update_fillcheck(trade_price: float):
+    """
+    Detects actual fills based on a 10-tick move from peak/trough.
+    Updates entryprice to the real fill price, sends alert, and saves state.
+    """
+    global fillcheck, fillcount, entryprice, LastSide, status, totaltradecount, unfilledpnl
+    global _peak_price, _trough_price, _drop_filled, _last_entryprice_seen, alerts
+
+    # Skip if no active trade
     if entryprice is None or fillcheck == 0:
         _peak_price = None
         _trough_price = None
@@ -375,46 +550,68 @@ def update_fillcheck(trade_price: float):
         _last_entryprice_seen = None
         return
 
-    # If entryprice changed since last time, reset internal tracking for a fresh cycle
+    # Reset when a new entry starts
     if _last_entryprice_seen is None or entryprice != _last_entryprice_seen:
         _last_entryprice_seen = entryprice
         _peak_price = trade_price
         _trough_price = trade_price
         _drop_filled = False
 
-    # Update running peak and trough
-    if _peak_price is None or trade_price > _peak_price:
+    # Update rolling peak/trough
+    if trade_price > _peak_price:
         _peak_price = trade_price
-    if _trough_price is None or trade_price < _trough_price:
+    if trade_price < _trough_price:
         _trough_price = trade_price
 
     drop_threshold = DROP_TICKS * TICK_SIZE
 
-    # BUY side: detect drop from peak
+    # --- BUY side fill detection ---
     if LastSide == "buy":
         drop_amount = _peak_price - trade_price
-        if (not _drop_filled) and drop_amount >= drop_threshold:
-            # mark as filled
+        if not _drop_filled and drop_amount >= drop_threshold:
+            fill_price = trade_price
+            entryprice = fill_price  # update to actual fill price
+
+            msg = (
+                f"✅ FILLED | BUY | Trigger={fmt_price(_last_entryprice_seen)} | "
+                f"Fill={fmt_price(fill_price)} | Drop={DROP_TICKS} ticks | "
+                f"Peak={fmt_price(_peak_price)}"
+            )
+            alerts.append(msg)
+            alerts[:] = alerts[-200:]
+            print(msg)
+
             fillcheck = 0
             fillcount += 1
             _drop_filled = True
-            print(f"🚨 Fill: BUY first {DROP_TICKS}-tick drop -> peak={_peak_price}, price={trade_price}, drop={drop_amount:.8f}")
             save_state()
             return
 
-    # SELL side: detect rise from trough (opposite)
+    # --- SELL side fill detection ---
     elif LastSide == "sell":
         rise_amount = trade_price - _trough_price
-        if (not _drop_filled) and rise_amount >= drop_threshold:
+        if not _drop_filled and rise_amount >= drop_threshold:
+            fill_price = trade_price
+            entryprice = fill_price  # update to actual fill price
+
+            msg = (
+                f"✅ FILLED | SELL | Trigger={fmt_price(_last_entryprice_seen)} | "
+                f"Fill={fmt_price(fill_price)} | Rise={DROP_TICKS} ticks | "
+                f"Trough={fmt_price(_trough_price)}"
+            )
+            alerts.append(msg)
+            alerts[:] = alerts[-200:]
+            print(msg)
+
             fillcheck = 0
             fillcount += 1
             _drop_filled = True
-            print(f"🚨 Fill: SELL first {DROP_TICKS}-tick rise -> trough={_trough_price}, price={trade_price}, rise={rise_amount:.8f}")
             save_state()
             return
 
-    # No fill yet — continue tracking
+    # Continue tracking otherwise
     return
+
 
 
 
@@ -448,11 +645,65 @@ def update_fillcheck(trade_price: float):
 
 
 
+# def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
+#     global alerts, _triggered_window_id, _triggered_window_side
+#     global status, EntryCount, LastSide, _last_exit_lock
+
+#     # Preconditions: skip if required values not set
+#     if not (
+#         is_valid_price(trade_price)
+#         and upper_bound is not None
+#         and lower_bound is not None
+#         and _bounds_candle_ts is not None
+#     ):
+#         return
+
+#     # Convert timestamps
+#     trigger_time = datetime.fromtimestamp(trade_ts_ms / 1000, tz=KOLKATA_TZ)
+#     trigger_time_iso = trigger_time.isoformat()
+#     ts_dt = datetime.fromtimestamp(trade_ts_ms / 1000, tz=STORE_TZ)
+
+#     # ---- tick size & buffer ----
+#     tick_size = 0.01   # for ETHUSDC, adjust if needed
+#     buffer_ticks = 100
+#     entry_threshold = upper_bound - buffer_ticks * tick_size
+
+#     def process_trigger(side: str, entry_val: float, friendly: str):
+#         """Handles sending webhook + logging + updating state"""
+#         nonlocal trigger_time_iso, ts_dt
+#         global alerts, _triggered_window_id, _triggered_window_side, LastSide
+
+#         LastSide = side
+#         _triggered_window_id = _bounds_candle_ts
+#         _triggered_window_side = side
+
+#         # Send webhook
+#         send_webhook(trigger_time_iso, entry_val, side, "entry")
+
+#         # Prepare alert message
+#         msg = (
+#             f"{friendly} | {status}: {fmt_price(entry_val)} "
+#             f"| Live {fmt_price(trade_price)} "
+#             f"| Trigger {ts_dt.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')}"
+#         )
+#         alerts.append(msg)
+#         alerts[:] = alerts[-200:]  # keep only last 50
+
+#         save_state()
+
+#     # === Modified Trigger logic with buffer ===
+#     if trade_price >= entry_threshold:  
+#         if _triggered_window_id != _bounds_candle_ts:
+#             if _last_exit_lock == "unlock":
+#                 process_trigger("buy", entry_threshold, "LONG (buffered)")
+
+##======== 6/10/2025 New Actual Entryy ===================
 def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
+    """Evaluates incoming trade ticks and triggers entries when thresholds are hit."""
     global alerts, _triggered_window_id, _triggered_window_side
     global status, EntryCount, LastSide, _last_exit_lock
 
-    # Preconditions: skip if required values not set
+    # --- Preconditions ---
     if not (
         is_valid_price(trade_price)
         and upper_bound is not None
@@ -461,18 +712,19 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
     ):
         return
 
-    # Convert timestamps
+    # --- Convert timestamp ---
     trigger_time = datetime.fromtimestamp(trade_ts_ms / 1000, tz=KOLKATA_TZ)
     trigger_time_iso = trigger_time.isoformat()
     ts_dt = datetime.fromtimestamp(trade_ts_ms / 1000, tz=STORE_TZ)
 
-    # ---- tick size & buffer ----
-    tick_size = 0.01   # for ETHUSDC, adjust if needed
+    # --- Tick size & buffer logic ---
+    tick_size = 0.01   # for ETHUSDT; adjust if needed
     buffer_ticks = 100
     entry_threshold = upper_bound - buffer_ticks * tick_size
 
+    # --- Trigger handling ---
     def process_trigger(side: str, entry_val: float, friendly: str):
-        """Handles sending webhook + logging + updating state"""
+        """Handles webhook + logging + state updates for entry trigger."""
         nonlocal trigger_time_iso, ts_dt
         global alerts, _triggered_window_id, _triggered_window_side, LastSide
 
@@ -480,25 +732,30 @@ def try_trigger_on_trade(trade_price: float, trade_ts_ms: int):
         _triggered_window_id = _bounds_candle_ts
         _triggered_window_side = side
 
-        # Send webhook
+        # Send entry webhook (records trigger, not fill)
         send_webhook(trigger_time_iso, entry_val, side, "entry")
 
-        # Prepare alert message
+        # Create alert message — mark this clearly as a trigger
         msg = (
-            f"{friendly} | {status}: {fmt_price(entry_val)} "
+            f"📈 TRIGGERED | {friendly} | {status}: {fmt_price(entry_val)} "
             f"| Live {fmt_price(trade_price)} "
-            f"| Trigger {ts_dt.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')}"
+            f"| Time {ts_dt.astimezone(KOLKATA_TZ).strftime('%H:%M:%S')}"
         )
         alerts.append(msg)
-        alerts[:] = alerts[-200:]  # keep only last 50
+        alerts[:] = alerts[-200:]  # keep last N alerts
+        print(msg)
 
         save_state()
 
-    # === Modified Trigger logic with buffer ===
-    if trade_price >= entry_threshold:  
+    # --- Example condition for BUY entry (buffered) ---
+    if trade_price >= entry_threshold:
         if _triggered_window_id != _bounds_candle_ts:
             if _last_exit_lock == "unlock":
                 process_trigger("buy", entry_threshold, "LONG (buffered)")
+
+    # NOTE:
+    # You can add SELL trigger logic similarly below if your strategy supports shorts.
+
 
 
 # ==========================
